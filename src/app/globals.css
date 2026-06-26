@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f8fafc; color: #0f172a; }
+button, input, select, textarea { font: inherit; }
+.calendar-cell { min-height: 132px; }
+.task-dot { width: 7px; height: 7px; border-radius: 999px; flex: 0 0 auto; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+.input { width: 100%; border: 1px solid #e2e8f0; border-radius: 12px; padding: 11px 12px; outline: none; background: white; }
+.input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, .12); }
+.shadow-soft { box-shadow: 0 12px 30px rgba(15, 23, 42, .06); }
