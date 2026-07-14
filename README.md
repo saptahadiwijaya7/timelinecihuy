@@ -159,3 +159,29 @@ Tombol **Refresh dari Google Sheet** tetap tersedia setelah login untuk refresh 
 - Dashboard tambah: On-Time Delivery rate, Budget vs Realisasi, Rata-rata Durasi Task per Kategori, dan tombol Export PDF (via window.print, hanya area dashboard).
 - Scrollbar horizontal Quarter & Kanban dipindah ke atas.
 - On-time delivery memakai `updatedAt` sebagai proxy tanggal selesai (task Done dianggap tepat waktu bila terakhir diubah <= deadline).
+
+## Update v1.7.0 — Asisten AI (Gemini) di panel kanan
+- Kolom kanan yang tadinya kosong kini berisi **Asisten Timeline**: chat AI yang menjawab seputar data aplikasi (project, task, budget, realisasi, PIC, output, progress). Membuka Detail Task akan meng-overlay panel ini.
+- Riwayat percakapan disimpan lokal per user (localStorage); tombol hapus untuk mengosongkan.
+- Data dikirim ke Google Gemini API lewat route server `/api/chat` (API key tidak pernah sampai ke browser).
+
+### Aktivasi
+1. Ambil API key gratis di https://aistudio.google.com/apikey
+2. Di Vercel → Environment Variables → tambah `GEMINI_API_KEY` = key tsb (Production & Preview). Opsional `GEMINI_MODEL` (default `gemini-2.0-flash`).
+3. Redeploy.
+
+Catatan privasi: ringkasan data project/task/budget dikirim ke Gemini saat user bertanya. Pastikan sesuai kebijakan data perusahaan. Jika `GEMINI_API_KEY` belum diset, panel tetap tampil tapi memberi pesan bahwa fitur belum aktif.
+
+
+## Update v1.8.0 — Asisten AI fleksibel (default Groq, tanpa kartu)
+Route `/api/chat` kini generik (format OpenAI-compatible), bisa pindah provider lewat env tanpa ubah kode.
+
+Default: **Groq** — gratis, tanpa kartu kredit (~1.000 request/hari).
+1. Buat API key di https://console.groq.com/keys (mulai `gsk_`).
+2. Di Vercel → Environment Variables:
+   - `AI_PROVIDER` = `groq`
+   - `AI_API_KEY` = key Groq
+   - (opsional) `AI_MODEL` = kosongkan untuk default `llama-3.3-70b-versatile`. Jika model dinonaktifkan Groq, coba `openai/gpt-oss-20b` atau `llama-3.1-8b-instant`.
+3. Redeploy.
+
+Pindah provider kapan saja tanpa ubah kode: set `AI_PROVIDER` ke `openai` / `openrouter` / `gemini` dan isi `AI_API_KEY` yang sesuai (base URL & model default otomatis mengikuti; bisa dioverride via `AI_BASE_URL` / `AI_MODEL`). Variabel `GEMINI_API_KEY` lama tetap dikenali sebagai fallback bila `AI_PROVIDER=gemini`.
