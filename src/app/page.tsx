@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState, useEffect, useRef } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, ChevronDown, Folder, LayoutDashboard, ListTodo, Menu, Plus, Search, Settings, Trash2, Users, X, Download, Upload, Save, KanbanSquare, AlertTriangle, Archive, MapPin, Link2, RotateCcw, Banknote, Bell, BarChart3, Bot, Send, Sparkles, Video } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, ChevronDown, Folder, LayoutDashboard, ListTodo, Menu, Plus, Search, Settings, Trash2, Users, X, Download, Upload, Save, KanbanSquare, AlertTriangle, Archive, MapPin, Link2, RotateCcw, Banknote, Bell, BarChart3, Bot, Send, Sparkles, Video, LogIn, Loader2 } from 'lucide-react';
 import { categories as defaultCategories, pics as defaultPics, projects as defaultProjects, requesters as defaultRequesters, seedTasks, settings as defaultSettings, statuses as defaultStatuses, users as defaultUsers } from '@/lib/data';
 import { AppUser, Pic, Project, ProjectFlag, SheetData, Status, Task, TaskPayload, WorkspaceSettings } from '@/lib/types';
 
@@ -143,6 +143,7 @@ export default function Home() {
   const [users, setUsers] = useState<AppUser[]>(defaultUsers);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
   const [currentEmail, setCurrentEmail] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(seedTasks[0]?.id ?? null);
   const [drawerOpen, setDrawerOpen] = useState(true);
@@ -161,6 +162,8 @@ export default function Home() {
   const metaInitRef = useRef(false);
   const lastEditRef = useRef(0);
   const metaDirtyRef = useRef(false);
+  const pendingRef = useRef(0);
+  const tombRef = useRef<{ tasks: Set<string>; pics: Set<string>; users: Set<string>; projects: Set<string> }>({ tasks: new Set(), pics: new Set(), users: new Set(), projects: new Set() });
 
   useEffect(() => {
     let alive = true;
@@ -257,10 +260,16 @@ export default function Home() {
 
   async function apiPost(body: any) {
     lastEditRef.current = Date.now();
-    const res = await fetch('/api/data', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const data = await res.json();
-    if (!res.ok || data.success === false) throw new Error(data.message || 'Permintaan gagal');
-    return data;
+    pendingRef.current += 1;
+    try {
+      const res = await fetch('/api/data', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const data = await res.json();
+      if (!res.ok || data.success === false) throw new Error(data.message || 'Permintaan gagal');
+      return data;
+    } finally {
+      pendingRef.current = Math.max(0, pendingRef.current - 1);
+      lastEditRef.current = Date.now();
+    }
   }
   function persistTask(task: Task) {
     apiPost({ action: 'upsertTask', task })
@@ -275,14 +284,25 @@ export default function Home() {
       .catch((err) => setSyncMessage(`Gagal simpan task: ${err instanceof Error ? err.message : 'error'}`));
   }
   function applyRemote(data: any) {
-    setTasks(data.tasks || []);
-    setProjects(data.projects?.length ? data.projects : defaultProjects);
-    setPics(data.pics?.length ? normalizePics(data.pics) : defaultPics);
+    const tomb = tombRef.current;
+    const srvTasks = (data.tasks || []) as Task[];
+    const srvPics = data.pics?.length ? normalizePics(data.pics) : defaultPics;
+    const srvUsers = (data.users?.length ? data.users : defaultUsers) as AppUser[];
+    const srvProjects = (data.projects?.length ? data.projects : defaultProjects) as Project[];
+    // Buang item yang baru saja dihapus lokal (tombstone) agar tidak "muncul lagi" karena data server sempat stale.
+    // Bila server sudah tidak memuatnya, lepaskan tombstone-nya (sudah terkonfirmasi terhapus).
+    tomb.tasks.forEach((id) => { if (!srvTasks.some((t) => t.id === id)) tomb.tasks.delete(id); });
+    tomb.pics.forEach((nm) => { if (!srvPics.some((p) => p.name === nm)) tomb.pics.delete(nm); });
+    tomb.users.forEach((id) => { if (!srvUsers.some((u) => u.id === id)) tomb.users.delete(id); });
+    tomb.projects.forEach((id) => { if (!srvProjects.some((p) => p.id === id)) tomb.projects.delete(id); });
+    setTasks(srvTasks.filter((t) => !tomb.tasks.has(t.id)));
+    setProjects(srvProjects.filter((p) => !tomb.projects.has(p.id)));
+    setPics(srvPics.filter((p) => !tomb.pics.has(p.name)));
     setCategories(data.categories?.length ? data.categories : defaultCategories);
     setStatuses(data.statuses?.length ? data.statuses : defaultStatuses);
     setRequesters(data.requesters?.length ? data.requesters : defaultRequesters);
     setSettings(data.settings || defaultSettings);
-    setUsers(data.users?.length ? data.users : defaultUsers);
+    setUsers(srvUsers.filter((u) => !tomb.users.has(u.id)));
   }
 
   // Simpan master data LANGSUNG (tanpa debounce). `patch` berisi nilai baru sehingga tidak
@@ -295,7 +315,7 @@ export default function Home() {
       .catch((err) => setSyncMessage(`Gagal simpan master data: ${err instanceof Error ? err.message : 'error'}`))
       .finally(() => { metaDirtyRef.current = false; });
   }
-  const updatePics = (next: Pic[]) => { setPics(next); saveMetaNow({ pics: next }); };
+  const updatePics = (next: Pic[]) => { pics.forEach((p) => { if (!next.some((n) => n.name === p.name)) tombRef.current.pics.add(p.name); }); next.forEach((n) => tombRef.current.pics.delete(n.name)); setPics(next); saveMetaNow({ pics: next }); };
   const updateCategories = (next: string[]) => { setCategories(next); saveMetaNow({ categories: next }); };
   const updateStatuses = (next: string[]) => { setStatuses(next); saveMetaNow({ statuses: next }); };
   const updateRequesters = (next: string[]) => { setRequesters(next); saveMetaNow({ requesters: next }); };
@@ -317,6 +337,7 @@ export default function Home() {
   }
   function deleteTask(id: string) {
     if (!canDelete) { setSyncMessage('Akses ditolak: hanya Admin yang bisa hapus task.'); return; }
+    tombRef.current.tasks.add(id);
     setTasks((current) => current.filter((task) => task.id !== id));
     if (selectedTaskId === id) setSelectedTaskId(null);
     apiPost({ action: 'deleteTask', id }).then(() => setSyncMessage('Task dihapus.')).catch((err) => setSyncMessage(`Gagal hapus task: ${err instanceof Error ? err.message : 'error'}`));
@@ -349,6 +370,7 @@ export default function Home() {
   }
   function removeUser(id: string) {
     if (!canManageUsers) { setSyncMessage('Akses ditolak: hanya Admin yang kelola user.'); return; }
+    tombRef.current.users.add(id);
     setUsers((cur) => cur.filter((u) => u.id !== id));
     apiPost({ action: 'deleteUser', id }).then(() => setSyncMessage('User dihapus.')).catch((err) => setSyncMessage(`Gagal hapus user: ${err instanceof Error ? err.message : 'error'}`));
   }
@@ -384,6 +406,7 @@ export default function Home() {
     if (!canDelete) { setSyncMessage('Akses ditolak: hanya Admin yang bisa hapus permanen.'); return; }
     const target = projects.find((x) => x.id === id);
     if (target && !isArchived(target)) { setSyncMessage('Arsipkan project dulu sebelum hapus permanen.'); return; }
+    tombRef.current.projects.add(id);
     setProjects((cur) => cur.filter((x) => x.id !== id));
     apiPost({ action: 'deleteProject', id }).then(() => setSyncMessage('Project dihapus permanen.')).catch((err) => setSyncMessage(`Gagal hapus project: ${err instanceof Error ? err.message : 'error'}`));
   }
@@ -416,7 +439,7 @@ export default function Home() {
     const interval = window.setInterval(async () => {
       // Jangan timpa data lokal saat: sedang polling, ada modal terbuka, penyimpanan master data pending,
       // atau baru saja ada editan (beri jeda 8 detik agar penyimpanan sempat selesai lebih dulu).
-      if (pollingRef.current || modalOpen || projectModalOpen || metaDirtyRef.current || Date.now() - lastEditRef.current < 8000) return;
+      if (pollingRef.current || modalOpen || projectModalOpen || metaDirtyRef.current || pendingRef.current > 0 || Date.now() - lastEditRef.current < 4000) return;
       pollingRef.current = true;
       try { const res = await fetch('/api/data', { cache: 'no-store' }); const data = await res.json(); if (res.ok && data.tasks) applyRemote(data); }
       catch { /* koneksi sementara; abaikan */ }
@@ -484,9 +507,11 @@ export default function Home() {
 
   const kpis = useMemo(() => ({ total: filteredTasks.length, progress: filteredTasks.filter(t => effectiveStatus(t) === 'Progress').length, overdue: filteredTasks.filter(t => isOverdue(t)).length, dueSoon: filteredTasks.filter(t => { const end = parseIso(t.endDate || t.startDate).getTime(); const now = new Date(); return end >= now.getTime() && end - now.getTime() <= 3 * 86400000 && effectiveStatus(t) !== 'Done'; }).length }), [filteredTasks]);
   async function login() {
+    if (loginLoading) return;
     const email = loginEmail.trim().toLowerCase();
     const password = loginPassword;
     if (!email || !password) { setSyncMessage('Email dan password wajib diisi.'); return; }
+    setLoginLoading(true);
     setSyncMessage('Memverifikasi login...');
     try {
       const data = await apiPost({ action: 'login', email, password });
@@ -498,12 +523,32 @@ export default function Home() {
       setLoginPassword('');
       setSyncMessage(`Login sebagai ${pu.name} (${pu.role}).`);
     } catch (err) { setSyncMessage(err instanceof Error ? err.message : 'Login gagal.'); }
+    finally { setLoginLoading(false); }
   }
   function logout() { window.localStorage.removeItem(USER_KEY); setCurrentEmail(null); setLoginEmail(''); setLoginPassword(''); }
 
   if (isBootstrapping) return <main className="grid min-h-screen place-items-center bg-slate-50 p-6"><section className="w-full max-w-md rounded-3xl border bg-white p-8 text-center shadow-soft"><div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-2xl bg-blue-50 text-blue-600"><CalendarDays size={34}/></div><h1 className="text-2xl font-bold">Timeline Project</h1><p className="mt-2 text-sm text-slate-500">Loading workspace, users, dan data terbaru dari Google Sheet...</p><div className="mt-6 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full w-1/2 animate-pulse rounded-full bg-blue-600" /></div><p className="mt-4 rounded-xl bg-slate-100 p-3 text-sm text-slate-600">{syncMessage}</p></section></main>;
 
-  if (!currentUser) return <main className="grid min-h-screen place-items-center bg-slate-50 p-6"><section className="w-full max-w-lg rounded-3xl border bg-white p-8 shadow-soft"><div className="mb-6 flex items-center gap-3"><CalendarDays size={36} className="text-blue-600"/><div><h1 className="text-2xl font-bold">{settings.workspaceName}</h1><p className="text-sm text-slate-500">Login internal. Users otomatis dimuat dari Google Sheet</p></div></div><label className="mb-2 block text-sm font-semibold text-slate-600">Email</label><input className="input mb-4" value={loginEmail} onChange={e=>setLoginEmail(e.target.value)} placeholder="branding@cpssoft.com"/><label className="mb-2 block text-sm font-semibold text-slate-600">Password</label><input type="password" className="input mb-4" value={loginPassword} onChange={e=>setLoginPassword(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') login(); }} placeholder="Masukkan password"/><button onClick={login} className="w-full rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white">Masuk</button><p className="mt-4 rounded-xl bg-slate-100 p-3 text-sm text-slate-600">{syncMessage}</p><p className="mt-4 text-xs text-slate-500">Akses diatur dari tab <b>Users</b>: Admin, Manager, Member, Viewer. Demo: admin@example.com / admin123, manager@example.com / manager123, member@example.com / member123, viewer@example.com / viewer123.</p></section></main>;
+  if (!currentUser) return <main className="grid min-h-screen place-items-center bg-slate-50 p-6">
+    <section className="w-full max-w-md rounded-3xl border border-slate-200/70 bg-white p-8 shadow-soft sm:p-10">
+      <div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-2xl bg-blue-600 text-white shadow-sm"><CalendarDays size={28} /></div>
+      <h1 className="text-center text-2xl font-bold text-slate-900">{settings.workspaceName}</h1>
+      <p className="mt-1 text-center text-sm text-slate-500">Masuk untuk melanjutkan</p>
+      <div className="mt-8 space-y-4">
+        <div>
+          <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Email</label>
+          <input className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:bg-white" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') login(); }} placeholder="nama@cpssoft.com" autoComplete="email" />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">Password</label>
+          <input type="password" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:bg-white" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') login(); }} placeholder="Masukkan password" autoComplete="current-password" />
+        </div>
+        {/gagal|salah|ditolak|tidak ditemukan|wajib|belum|nonaktif|tidak valid|tidak aktif|error/i.test(syncMessage) && <p className="rounded-xl bg-rose-50 px-4 py-2.5 text-sm font-medium text-rose-600">{syncMessage}</p>}
+        <button onClick={login} disabled={loginLoading} className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-70">{loginLoading ? <><Loader2 size={18} className="animate-spin" />Memverifikasi…</> : <><LogIn size={18} />Masuk</>}</button>
+      </div>
+      <p className="mt-6 text-center text-xs text-slate-400">Belum punya akun? Hubungi admin untuk ditambahkan.</p>
+    </section>
+  </main>;
 
   return <main className="min-h-screen bg-slate-50">
     <aside className="fixed left-0 top-0 z-20 hidden h-screen w-72 flex-col bg-slate-950 text-white lg:flex">

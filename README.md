@@ -210,3 +210,14 @@ Catatan: karena scope Calendar baru ditambahkan, pemilik Apps Script perlu menja
 Penyebab: master data (status, kategori, requester, email notifikasi finance, settings) sebelumnya disimpan lewat debounce 900ms yang bisa gagal menang balapan dengan auto-refresh, sehingga penyimpanan ke Sheet tidak terjadi dan data editan tertimpa data lama.
 Perbaikan: master data kini disimpan LANGSUNG saat tombol ditekan (Tambah/hapus chip, Simpan Workspace), mengirim nilai baru secara eksplisit. Tidak ada lagi debounce.
 Ini perubahan frontend saja (page.tsx) — cukup push ke GitHub/Vercel, tidak perlu redeploy Apps Script.
+
+## Update v1.12.0 — Perbaikan item terhapus "muncul lagi"
+Penyebab: auto-refresh bisa membaca data server tepat sebelum penghapusan terkonfirmasi, lalu menimpa balik data lokal sehingga item yang dihapus muncul kembali.
+Perbaikan:
+- Auto-refresh kini ditahan selama ada permintaan tulis yang belum selesai (penghitung in-flight), bukan lagi mengandalkan jeda waktu tetap.
+- "Tombstone": task/PIC/user/project yang baru dihapus disaring dari data server sampai server benar-benar mengkonfirmasi item itu hilang — mencegah kemunculan kembali akibat data server yang sempat basi.
+Perubahan frontend saja (page.tsx). Cukup push ke Vercel.
+
+## Update v1.13.0
+- Google Calendar: akun pemilik Apps Script tidak lagi diundang sebagai tamu ke event Meeting, sehingga event tidak muncul dobel (satu di kalender "Timeline Meetings", satu tersalin ke kalender utama pemilik). Perlu redeploy Code.gs (New Version).
+- Tombol login menampilkan animasi loading (spinner + "Memverifikasi…") dan nonaktif sementara selama proses login.

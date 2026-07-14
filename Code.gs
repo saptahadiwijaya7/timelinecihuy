@@ -352,6 +352,9 @@ function collectGuests(task) {
   pics.forEach(function (p) { var e = p.email ? String(p.email).trim() : (p.name ? resolveEmail(p.name) : ''); if (e && e.indexOf('@') > 0) set[e.toLowerCase()] = true; });
   // Kolom "Invite" pada task: untuk orang DI LUAR menu PIC.
   String(task.invite || '').split(/[,;\s]+/).forEach(function (e) { e = String(e).trim(); if (e.indexOf('@') > 0) set[e.toLowerCase()] = true; });
+  // Jangan undang akun pemilik Apps Script (pemilik kalender "Timeline Meetings"): event sudah tampil di
+  // kalender tersebut, jadi mengundangnya sebagai tamu hanya membuat salinan dobel di kalender utamanya.
+  try { var owner = Session.getEffectiveUser().getEmail(); if (owner) delete set[owner.toLowerCase()]; } catch (eOwner) {}
   return Object.keys(set);
 }
 function syncMeetingEvent(task, existingEventId) {
