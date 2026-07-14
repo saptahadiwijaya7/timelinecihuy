@@ -1,4 +1,4 @@
-import { AppUser, Project, Task, WorkspaceSettings } from './types';
+import { AppUser, Pic, Project, Task, WorkspaceSettings } from './types';
 
 export const projects: Project[] = [
   { id: 'propin', name: 'PROPIN', color: '#facc15', status: 'Active' },
@@ -10,7 +10,8 @@ export const projects: Project[] = [
   { id: 'lainnya', name: 'Lainnya', color: '#94a3b8', status: 'Active' }
 ];
 
-export const pics = ['Admin', 'Ayu', 'Dimas Setiawan', 'Iva', 'Tim Design', 'Tim Video', 'Badut Balon'];
+export const pics: Pic[] = [{ name: 'Admin' }, { name: 'Ayu' }, { name: 'Dimas Setiawan' }, { name: 'Iva' }, { name: 'Tim Design' }, { name: 'Tim Video' }, { name: 'Badut Balon' }].map((p) => ({ color: '#38bdf8', ...p }));
+export const requesters = ['Marketing', 'Sales', 'Product', 'Management', 'HR'];
 export const categories = ['Briefing', 'Campaign', 'Shooting', 'Editing', 'Meeting', 'Review', 'Knowledge Base', 'Event', 'Design'];
 export const statuses = ['Planned', 'Progress', 'Waiting', 'Review', 'Done', 'Canceled'];
 

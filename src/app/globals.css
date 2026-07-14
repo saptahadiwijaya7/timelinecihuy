@@ -13,3 +13,7 @@ button, input, select, textarea { font: inherit; }
 .input { width: 100%; border: 1px solid #e2e8f0; border-radius: 12px; padding: 11px 12px; outline: none; background: white; }
 .input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, .12); }
 .shadow-soft { box-shadow: 0 12px 30px rgba(15, 23, 42, .06); }
+
+/* Skala tampilan default ~80%: Tailwind berbasis rem, jadi menurunkan root font-size
+   menskalakan seluruh UI tanpa merusak elemen fixed/h-screen (masalah pada zoom). */
+html { font-size: 12.8px; }

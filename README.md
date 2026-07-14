@@ -114,3 +114,42 @@ Flow baru:
 
 Tombol **Import Users & Data dari Google Sheet** di halaman login sudah dihapus.
 Tombol **Refresh dari Google Sheet** tetap tersedia setelah login untuk refresh manual jika dibutuhkan.
+
+## Update: Keamanan Password & Penyimpanan Per-Baris (v1.2.0)
+
+### Keamanan password
+- Password kini di-**hash** (salted SHA-256 + iterasi) di Apps Script dan **tidak pernah dikirim ke browser**. Endpoint `read` hanya mengembalikan `hasPassword: true/false`.
+- **Login diverifikasi di server** lewat `action=login`. Password lama yang masih plaintext di sheet akan **otomatis di-upgrade ke hash** saat login pertama yang berhasil (tidak perlu migrasi manual).
+- Tambahkan **shared token** agar Web App tidak bisa dipanggil sembarang orang:
+  1. Di project Apps Script: **Project Settings → Script Properties → Add** → key `API_TOKEN`, value = string acak.
+  2. Di `.env.local` Next.js: `SHEET_API_TOKEN=` diisi nilai yang sama.
+  - Jika `API_TOKEN` belum diset, endpoint tetap jalan (mode dev). Set untuk produksi.
+
+### Penyimpanan per-baris (bukan overwrite total)
+- Perubahan task memakai `upsertTask` / `deleteTask` (hanya baris terkait), memakai `LockService` untuk mencegah tulis bersamaan yang saling menimpa.
+- User dikelola per-baris via `upsertUser` / `deleteUser`. Mengubah role/nama/aktif **tidak** menghapus hash password (password hanya berubah bila field password diisi).
+- Master data (projects/PIC/kategori/status/settings) disimpan via `writeMeta` (debounce), tidak menyentuh Tasks maupun Users.
+- Tombol **Sinkron Penuh** memakai `writeAll` yang kini aman: menulis ulang Tasks + master data, **tanpa menyentuh tab Users**.
+
+### Langkah deploy Apps Script
+1. Paste `Code.gs` baru.
+2. Jalankan sekali `ensureSheets` (atau `test`) untuk memastikan header terbaru (kolom `statusMode` di Tasks).
+3. Set Script Property `API_TOKEN` (disarankan).
+4. **Deploy → Manage deployments → Edit → New version**.
+
+## Update: Rename PIC, Chip Timeline, Reminder Finance (v1.3.0)
+
+- **Rename PIC** dari menu PIC / Team otomatis memperbarui seluruh task milik PIC tersebut (bulk update satu kolom di sheet, aksi `renamePic`).
+- **Chip di card Timeline**: chip "Attachment" (klik membuka link) muncul jika task punya link; chip "Finance" muncul untuk task berkategori Finance.
+- **Reminder email task Finance (H-3, H-2, H-1, Hari-H)**:
+  1. Tambahkan kategori `Finance` di Pengaturan (jika belum ada).
+  2. Isi **Email Notifikasi Finance** di Pengaturan (boleh lebih dari satu, pisahkan koma).
+  3. Di Apps Script: **Triggers (ikon jam) → Add Trigger** → function `sendFinanceReminders` → Time-driven → Day timer → pilih jam (mis. 7–8 pagi).
+  - Setiap hari, task Finance yang deadline-nya 0–3 hari lagi (belum Done/Canceled) dikirim sebagai satu email rekap, dikelompokkan H-3 / H-2 / H-1 / Hari-H. Pengirim adalah akun Google pemilik Apps Script (kuota MailApp harian berlaku).
+
+## Update v1.4.0
+- Perbaikan skala 80%: pindah dari `zoom` ke root font-size (rem) — sidebar tidak lagi terpotong.
+- Card PIC didesain ulang: 5 kolom, foto penuh dengan gradient, nama lebih besar, chip role berwarna.
+- Drawer Detail Task menutup otomatis saat pindah ke Projects/PIC/Pengaturan, klik di luar drawer, atau tekan Escape.
+- Lonceng notifikasi di header: task Finance (H-3 s/d Hari-H) + semua task yang berjalan hari ini. Badge merah untuk yang belum dibaca; bunyi "ting-nong" berulang tiap 30 menit selama belum dibuka. Suara bisa dimatikan di Pengaturan (checkbox di kartu Workspace).
+- Kartu Workspace di Pengaturan kini terkunci; ubah lewat tombol Edit → Simpan/Batal.
