@@ -26,6 +26,7 @@ export type Project = {
   lokasi2?: string;
   folderLink?: string;
   budget?: number | string;
+  actualCost?: number | string;
   flag?: ProjectFlag;
   thumbnail?: string; // data URL kecil
   notes?: string;

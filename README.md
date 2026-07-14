@@ -153,3 +153,9 @@ Tombol **Refresh dari Google Sheet** tetap tersedia setelah login untuk refresh 
 - Drawer Detail Task menutup otomatis saat pindah ke Projects/PIC/Pengaturan, klik di luar drawer, atau tekan Escape.
 - Lonceng notifikasi di header: task Finance (H-3 s/d Hari-H) + semua task yang berjalan hari ini. Badge merah untuk yang belum dibaca; bunyi "ting-nong" berulang tiap 30 menit selama belum dibuka. Suara bisa dimatikan di Pengaturan (checkbox di kartu Workspace).
 - Kartu Workspace di Pengaturan kini terkunci; ubah lewat tombol Edit → Simpan/Batal.
+
+## Update v1.6.0 — Dashboard lanjutan
+- Kolom baru Projects: `actualCost` (Realisasi Biaya). Deploy Code.gs → jalankan `ensureSheets` sekali → New Version.
+- Dashboard tambah: On-Time Delivery rate, Budget vs Realisasi, Rata-rata Durasi Task per Kategori, dan tombol Export PDF (via window.print, hanya area dashboard).
+- Scrollbar horizontal Quarter & Kanban dipindah ke atas.
+- On-time delivery memakai `updatedAt` sebagai proxy tanggal selesai (task Done dianggap tepat waktu bila terakhir diubah <= deadline).

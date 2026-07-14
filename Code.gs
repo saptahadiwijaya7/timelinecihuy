@@ -21,7 +21,7 @@ const SHEETS = {
 };
 
 const TASK_HEADERS = ['id','title','projectId','pic','startDate','endDate','startTime','endTime','status','category','notes','link','createdAt','updatedAt','statusMode'];
-const PROJECT_HEADERS = ['id','name','color','status','startMonth','requester','pic','outputLandscape','outputVertical','distribusi','lokasi1','lokasi2','folderLink','budget','flag','thumbnail','notes','archived','description'];
+const PROJECT_HEADERS = ['id','name','color','status','startMonth','requester','pic','outputLandscape','outputVertical','distribusi','lokasi1','lokasi2','folderLink','budget','flag','thumbnail','notes','archived','description','actualCost'];
 const PIC_HEADERS = ['name','role','email','status','color','photo'];
 const LIST_HEADERS = ['name'];
 const USER_HEADERS = ['id','email','name','password','role','active','team'];
@@ -29,6 +29,11 @@ const TEAM_HEADERS = ['id','name','description'];
 const SETTINGS_HEADERS = ['key','value'];
 
 const PBKDF_ITER = 1000; // naikkan untuk lebih kuat; login akan sedikit lebih lambat
+
+// Token API bersama dengan Next.js (Vercel env: SHEET_API_TOKEN harus berisi nilai yang sama).
+// Ganti nilainya jika perlu. Script Property 'API_TOKEN' (jika diisi) lebih diprioritaskan daripada konstanta ini.
+// Kosongkan string ini ('') DAN Script Property untuk menonaktifkan pengecekan token (mode dev).
+const API_TOKEN = 'f30c2481a2e746fd7503bebbf463a358a9455b4230f2a1be';
 
 /* ================= ROUTING ================= */
 
@@ -86,8 +91,8 @@ function test() {
 /* ================= TOKEN & LOCK ================= */
 
 function checkToken(provided) {
-  var expected = PropertiesService.getScriptProperties().getProperty('API_TOKEN') || '';
-  if (!expected) return true; // belum diset (mode dev) -> izinkan. Set 'API_TOKEN' untuk produksi.
+  var expected = PropertiesService.getScriptProperties().getProperty('API_TOKEN') || API_TOKEN || '';
+  if (!expected) return true; // token belum diset di mana pun (mode dev) -> izinkan.
   return String(provided || '') === String(expected);
 }
 

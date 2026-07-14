@@ -17,3 +17,15 @@ button, input, select, textarea { font: inherit; }
 /* Skala tampilan default ~80%: Tailwind berbasis rem, jadi menurunkan root font-size
    menskalakan seluruh UI tanpa merusak elemen fixed/h-screen (masalah pada zoom). */
 html { font-size: 12.8px; }
+
+/* Export PDF: hanya area dashboard yang tercetak (tombol Export memanggil window.print()). */
+@media print {
+  html { font-size: 12px; }
+  body * { visibility: hidden; }
+  [data-print-area], [data-print-area] * { visibility: visible; }
+  [data-print-area] { position: absolute; left: 0; top: 0; width: 100%; padding: 8px; }
+  .print\:hidden { display: none !important; }
+  .print\:flex { display: flex !important; }
+  [data-print-area] .shadow-soft { box-shadow: none !important; }
+  [data-print-area] .grid { break-inside: avoid; }
+}
