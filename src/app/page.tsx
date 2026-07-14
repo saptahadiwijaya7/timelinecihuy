@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState, useEffect, useRef } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, ChevronDown, Folder, LayoutDashboard, ListTodo, Menu, Plus, Search, Settings, Trash2, Users, X, Download, Upload, Save, KanbanSquare, AlertTriangle, Archive, MapPin, Link2, RotateCcw, Banknote, Bell, BarChart3, Bot, Send, Sparkles } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, ChevronDown, Folder, LayoutDashboard, ListTodo, Menu, Plus, Search, Settings, Trash2, Users, X, Download, Upload, Save, KanbanSquare, AlertTriangle, Archive, MapPin, Link2, RotateCcw, Banknote, Bell, BarChart3, Bot, Send, Sparkles, Video } from 'lucide-react';
 import { categories as defaultCategories, pics as defaultPics, projects as defaultProjects, requesters as defaultRequesters, seedTasks, settings as defaultSettings, statuses as defaultStatuses, users as defaultUsers } from '@/lib/data';
 import { AppUser, Pic, Project, ProjectFlag, SheetData, Status, Task, TaskPayload, WorkspaceSettings } from '@/lib/types';
 
@@ -28,7 +28,7 @@ function diffDays(a: string, b: string) { return Math.max(0, Math.round((parseIs
 function addDays(iso: string, days: number) { const d = parseIso(iso); d.setDate(d.getDate() + days); return toIsoDate(d); }
 function tint(hex: string) { return `${hex}28`; }
 function isTaskOnDate(task: Task, iso: string) { const end = task.endDate || task.startDate; return task.startDate <= iso && end >= iso; }
-function defaultForm(date: string): FormState { return { title: '', projectId: 'campaign', pic: 'Admin', startDate: date, endDate: date, startTime: '', endTime: '', status: 'Planned', statusMode: 'auto', category: 'Briefing', notes: '', link: '' }; }
+function defaultForm(date: string): FormState { return { title: '', projectId: 'campaign', pic: 'Admin', startDate: date, endDate: date, startTime: '', endTime: '', status: 'Planned', statusMode: 'auto', category: 'Briefing', notes: '', link: '', invite: '', meetLink: '', calendarEventId: '' }; }
 function projectById(projects: Project[], id: string) { return projects.find((project) => project.id === id) ?? projects[projects.length - 1]; }
 
 type StatusStyle = { text: string; bg: string; card: string; dot: string };
@@ -108,6 +108,7 @@ function fileToThumbnail(file: File, size = 128): Promise<string> {
   });
 }
 function normalizePics(arr: any[]): Pic[] { return (arr || []).map((p: any) => typeof p === 'string' ? { name: p } : p).filter((p: Pic) => p && p.name); }
+const TIME_OPTIONS = (() => { const a: string[] = []; for (let h = 0; h < 24; h++) for (let m = 0; m < 60; m += 15) a.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`); return a; })();
 function emptyProjectForm(): Project { return { id: '', name: '', color: '#38bdf8', status: 'Active', startMonth: new Date().toISOString().slice(0, 7), requester: '', pic: '', outputLandscape: '', outputVertical: '', distribusi: '', lokasi1: '', lokasi2: '', folderLink: '', budget: '', actualCost: '', flag: '', thumbnail: '', notes: '', archived: false }; }
 
 function StatusControl({ task, statuses, onChange, editable }: { task: Task; statuses: string[]; onChange: (patch: Partial<Task>) => void; editable: boolean }) {
@@ -158,6 +159,8 @@ export default function Home() {
   const pollingRef = useRef(false);
   const metaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const metaInitRef = useRef(false);
+  const lastEditRef = useRef(0);
+  const metaDirtyRef = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -253,6 +256,7 @@ export default function Home() {
   const canManageUsers = role === 'Admin';
 
   async function apiPost(body: any) {
+    lastEditRef.current = Date.now();
     const res = await fetch('/api/data', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await res.json();
     if (!res.ok || data.success === false) throw new Error(data.message || 'Permintaan gagal');
@@ -260,7 +264,14 @@ export default function Home() {
   }
   function persistTask(task: Task) {
     apiPost({ action: 'upsertTask', task })
-      .then(() => setSyncMessage(`Tersimpan: "${task.title}" (${new Date().toLocaleTimeString('id-ID')}).`))
+      .then((res) => {
+        const rt = res && res.task;
+        if (rt) { setTasks((cur) => cur.map((t) => t.id === rt.id ? { ...t, meetLink: rt.meetLink || '', calendarEventId: rt.calendarEventId || '' } : t)); }
+        if (rt && rt._calendarWarning) setSyncMessage(`Task tersimpan, tapi sinkron kalender gagal (event tetap bisa dibuat manual). Detail: ${String(rt._calendarWarning).slice(0, 120)}`);
+        else if (rt && rt.meetLink) setSyncMessage(`Tersimpan + event "Timeline Meetings" dibuat, link Meet siap.`);
+        else if (rt && rt.calendarEventId) setSyncMessage(`Tersimpan + event kalender dibuat (tanpa link Meet otomatis).`);
+        else setSyncMessage(`Tersimpan: "${task.title}" (${new Date().toLocaleTimeString('id-ID')}).`);
+      })
       .catch((err) => setSyncMessage(`Gagal simpan task: ${err instanceof Error ? err.message : 'error'}`));
   }
   function applyRemote(data: any) {
@@ -273,6 +284,22 @@ export default function Home() {
     setSettings(data.settings || defaultSettings);
     setUsers(data.users?.length ? data.users : defaultUsers);
   }
+
+  // Simpan master data LANGSUNG (tanpa debounce). `patch` berisi nilai baru sehingga tidak
+  // bergantung pada timing update state React. Nilai lain diambil dari state saat ini.
+  function saveMetaNow(patch: Partial<{ pics: Pic[]; categories: string[]; statuses: string[]; requesters: string[]; settings: WorkspaceSettings }>) {
+    if (!canManage) { setSyncMessage('Akses ditolak: hanya Admin/Manager yang bisa ubah master data.'); return; }
+    metaDirtyRef.current = true; lastEditRef.current = Date.now();
+    apiPost({ action: 'writeMeta', pics, categories, statuses, requesters, settings, ...patch })
+      .then(() => setSyncMessage(`Master data tersimpan (${new Date().toLocaleTimeString('id-ID')}).`))
+      .catch((err) => setSyncMessage(`Gagal simpan master data: ${err instanceof Error ? err.message : 'error'}`))
+      .finally(() => { metaDirtyRef.current = false; });
+  }
+  const updatePics = (next: Pic[]) => { setPics(next); saveMetaNow({ pics: next }); };
+  const updateCategories = (next: string[]) => { setCategories(next); saveMetaNow({ categories: next }); };
+  const updateStatuses = (next: string[]) => { setStatuses(next); saveMetaNow({ statuses: next }); };
+  const updateRequesters = (next: string[]) => { setRequesters(next); saveMetaNow({ requesters: next }); };
+  const updateSettings = (next: WorkspaceSettings) => { setSettings(next); saveMetaNow({ settings: next }); };
 
   function openCreate(date: string) { if (!canCreate) { setSyncMessage('Akses ditolak: role kamu hanya bisa melihat data.'); return; } setForm(defaultForm(date)); setModalOpen(true); }
   function openEdit(task: Task) { setForm({ ...task, endDate: task.endDate || task.startDate }); setSelectedTaskId(task.id); setModalOpen(true); setDrawerOpen(true); }
@@ -381,31 +408,22 @@ export default function Home() {
     catch (err) { setSyncMessage(err instanceof Error ? err.message : 'Gagal sinkron penuh.'); }
   }
 
-  // Master data (projects/pics/categories/statuses/settings) disimpan per-perubahan (debounce), tanpa menyentuh tasks/users.
-  useEffect(() => {
-    if (!currentUser || !canManage) return;
-    if (!metaInitRef.current) { metaInitRef.current = true; return; }
-    if (metaTimerRef.current) clearTimeout(metaTimerRef.current);
-    metaTimerRef.current = setTimeout(() => {
-      apiPost({ action: 'writeMeta', pics, categories, statuses, requesters, settings })
-        .then(() => setSyncMessage(`Master data tersimpan (${new Date().toLocaleTimeString('id-ID')}).`))
-        .catch((err) => setSyncMessage(`Gagal simpan master data: ${err instanceof Error ? err.message : 'error'}`));
-    }, 900);
-    return () => { if (metaTimerRef.current) clearTimeout(metaTimerRef.current); };
-  }, [pics, categories, statuses, requesters, settings, currentUser, canManage]);
+  // Master data disimpan langsung lewat saveMetaNow (updatePics/updateCategories/dst) — bukan lagi via debounce effect.
 
   // Auto refresh dari sheet untuk melihat perubahan user lain. Ditunda saat modal edit terbuka.
   useEffect(() => {
     if (!currentUser) return;
     const interval = window.setInterval(async () => {
-      if (pollingRef.current || modalOpen) return;
+      // Jangan timpa data lokal saat: sedang polling, ada modal terbuka, penyimpanan master data pending,
+      // atau baru saja ada editan (beri jeda 8 detik agar penyimpanan sempat selesai lebih dulu).
+      if (pollingRef.current || modalOpen || projectModalOpen || metaDirtyRef.current || Date.now() - lastEditRef.current < 8000) return;
       pollingRef.current = true;
       try { const res = await fetch('/api/data', { cache: 'no-store' }); const data = await res.json(); if (res.ok && data.tasks) applyRemote(data); }
       catch { /* koneksi sementara; abaikan */ }
       finally { pollingRef.current = false; }
     }, 20000);
     return () => window.clearInterval(interval);
-  }, [currentUser, modalOpen]);
+  }, [currentUser, modalOpen, projectModalOpen]);
 
   // Drawer detail task tertutup otomatis saat klik di luar drawer atau tekan Escape.
   useEffect(() => {
@@ -494,7 +512,7 @@ export default function Home() {
       <div className="mt-4 border-t border-white/10 px-4 py-5"><p className="mb-3 text-xs uppercase text-slate-400">Filter</p><FilterSelect label="Status Project" value={filter.projectStatus} onChange={(v) => setFilter({ ...filter, projectStatus: v, projectId: 'all' })} options={[[ 'all', 'Semua Status Project' ], ['Active', 'Project Aktif'], ['Done', 'Project Done'], ['Cancel', 'Project Cancel']]} /><FilterSelect label="Semua Project" value={filter.projectId} onChange={(v) => setFilter({ ...filter, projectId: v })} options={[[ 'all', 'Semua Project' ], ...projects.filter(p => !isArchived(p) && (filter.projectStatus === 'all' || normProjectStatus(p) === filter.projectStatus)).map(p => [p.id, p.name])]} /><FilterSelect label="Semua PIC" value={filter.pic} onChange={(v) => setFilter({ ...filter, pic: v })} options={[[ 'all', 'Semua PIC' ], ...picNames.map(p => [p, p])]} /><FilterSelect label="Semua Status" value={filter.status} onChange={(v) => setFilter({ ...filter, status: v })} options={[[ 'all', 'Semua Status' ], ...statuses.map(s => [s, s])]} /><FilterSelect label="Semua Kategori" value={filter.category} onChange={(v) => setFilter({ ...filter, category: v })} options={[[ 'all', 'Semua Kategori' ], ...categories.map(c => [c, c])]} /></div>
       <div className="mt-auto px-4 pb-6 text-xs text-slate-300"><div className="mb-3 rounded-xl bg-white/10 p-4"><p>{syncMessage}</p></div><button onClick={syncFromSheet} className="mb-2 flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-3 py-3 font-semibold text-white"><Download size={16}/>Refresh dari Google Sheet</button><button onClick={pushToSheet} className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 py-3 font-semibold text-white"><Upload size={16}/>Sinkron Penuh</button></div>
     </aside>
-    <section className="lg:pl-72"><Header page={page} filter={filter} setFilter={setFilter} exportJson={exportJson} currentUser={currentUser} role={role} logout={logout} notifItems={notifItems} unreadCount={unreadCount} onMarkSeen={markNotifSeen} onPickTask={(task: Task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }}/><div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px]"><div className="p-5 lg:p-8">{page !== 'Dashboard' && <KpiRow kpis={kpis}/>}{page === 'Dashboard' && <DashboardPage tasks={tasks} projects={projects}/>}{page === 'Kalender' && <><CalendarToolbar month={month} setMonth={setMonth} nextMonth={nextMonth} view={view} setView={setView} openCreate={openCreate} zoom={zoom} setZoom={setZoom}/>{view === 'Bulan' && <CalendarView days={days} month={month} tasks={filteredTasks} projects={projects} onCreate={openCreate} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} onMove={moveTaskDate} />}{view === 'Minggu' && <WeekView month={month} tasks={filteredTasks} projects={projects} onCreate={openCreate} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} onMove={moveTaskDate}/>} {view === 'Quarter' && <QuarterView month={month} zoom={zoom} tasks={filteredTasks} projects={projects} onCreate={openCreate} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} onMove={moveTaskDate}/>} {view === 'Timeline' && <TimelineView tasks={filteredTasks} projects={projects} statuses={statuses} canEdit={canCreate} onStatus={changeStatus} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} />} {view === 'Gantt' && <GanttView month={month} tasks={filteredTasks} projects={projects} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }}/>}<Legend projects={projects}/></>}{page === 'Timeline' && <TimelineView tasks={filteredTasks} projects={projects} statuses={statuses} canEdit={canCreate} onStatus={changeStatus} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} />}{page === 'Kanban' && <KanbanView statuses={statuses} tasks={filteredTasks} projects={projects} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} onStatus={(id: string, status: string) => changeStatus(id, { statusMode: 'manual', status })}/>} {page === 'Tasks' && <TasksPage tasks={filteredTasks} projects={projects} statuses={statuses} canEdit={canCreate} onStatus={changeStatus} onCreate={() => openCreate(todayIso())} onEdit={openEdit} onDelete={deleteTask}/>} {page === 'Projects' && <ProjectsPage projects={projects} tasks={tasks} canManage={canManage} canDelete={canDelete} onCreate={openCreateProject} onEdit={openEditProject} onArchive={setProjectArchived} onDeletePermanent={deleteProjectPermanent}/>} {page === 'PIC / Team' && <TeamPage pics={pics} setPics={setPics} tasks={tasks} projects={projects} canManage={canManage} onRenamePic={renamePic}/>} {page === 'Pengaturan' && <SettingsPage settings={settings} setSettings={setSettings} categories={categories} setCategories={setCategories} statuses={statuses} setStatuses={setStatuses} requesters={requesters} setRequesters={setRequesters} users={users} onSaveUser={saveUser} onRemoveUser={removeUser} canManageUsers={canManageUsers}/>}</div><aside className="relative hidden border-l bg-white xl:block"><AssistantPanel currentUser={currentUser} buildContext={buildAiContext}/>{drawerOpen && <div data-drawer className="absolute inset-0 z-20 overflow-y-auto bg-white"><TaskDrawer task={selectedTask} projects={projects} onClose={() => setDrawerOpen(false)} onEdit={openEdit} onDelete={deleteTask}/></div>}</aside>{drawerOpen && <div data-drawer className="fixed inset-x-0 bottom-0 top-20 z-30 overflow-y-auto bg-white xl:hidden"><TaskDrawer task={selectedTask} projects={projects} onClose={() => setDrawerOpen(false)} onEdit={openEdit} onDelete={deleteTask}/></div>}</div></section>{modalOpen && <TaskModal form={form} setForm={setForm} onClose={() => setModalOpen(false)} onSave={saveTask} projects={projects} pics={picNames} categories={categories} statuses={statuses}/>}{projectModalOpen && <ProjectModal form={projectForm} setForm={setProjectForm} requesters={requesters} pics={picNames} onClose={() => setProjectModalOpen(false)} onSave={saveProject} onArchive={setProjectArchived}/>}</main>;
+    <section className="lg:pl-72"><Header page={page} filter={filter} setFilter={setFilter} exportJson={exportJson} currentUser={currentUser} role={role} logout={logout} notifItems={notifItems} unreadCount={unreadCount} onMarkSeen={markNotifSeen} onPickTask={(task: Task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }}/><div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px]"><div className="p-5 lg:p-8">{page !== 'Dashboard' && <KpiRow kpis={kpis}/>}{page === 'Dashboard' && <DashboardPage tasks={tasks} projects={projects}/>}{page === 'Kalender' && <><CalendarToolbar month={month} setMonth={setMonth} nextMonth={nextMonth} view={view} setView={setView} openCreate={openCreate} zoom={zoom} setZoom={setZoom}/>{view === 'Bulan' && <CalendarView days={days} month={month} tasks={filteredTasks} projects={projects} onCreate={openCreate} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} onMove={moveTaskDate} />}{view === 'Minggu' && <WeekView month={month} tasks={filteredTasks} projects={projects} onCreate={openCreate} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} onMove={moveTaskDate}/>} {view === 'Quarter' && <QuarterView month={month} zoom={zoom} tasks={filteredTasks} projects={projects} onCreate={openCreate} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} onMove={moveTaskDate}/>} {view === 'Timeline' && <TimelineView tasks={filteredTasks} projects={projects} statuses={statuses} canEdit={canCreate} onStatus={changeStatus} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} />} {view === 'Gantt' && <GanttView month={month} tasks={filteredTasks} projects={projects} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }}/>}<Legend projects={projects}/></>}{page === 'Timeline' && <TimelineView tasks={filteredTasks} projects={projects} statuses={statuses} canEdit={canCreate} onStatus={changeStatus} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} />}{page === 'Kanban' && <KanbanView statuses={statuses} tasks={filteredTasks} projects={projects} onSelect={(task) => { setSelectedTaskId(task.id); setDrawerOpen(true); }} onStatus={(id: string, status: string) => changeStatus(id, { statusMode: 'manual', status })}/>} {page === 'Tasks' && <TasksPage tasks={filteredTasks} projects={projects} statuses={statuses} canEdit={canCreate} onStatus={changeStatus} onCreate={() => openCreate(todayIso())} onEdit={openEdit} onDelete={deleteTask}/>} {page === 'Projects' && <ProjectsPage projects={projects} tasks={tasks} canManage={canManage} canDelete={canDelete} onCreate={openCreateProject} onEdit={openEditProject} onArchive={setProjectArchived} onDeletePermanent={deleteProjectPermanent}/>} {page === 'PIC / Team' && <TeamPage pics={pics} setPics={updatePics} tasks={tasks} projects={projects} canManage={canManage} onRenamePic={renamePic}/>} {page === 'Pengaturan' && <SettingsPage settings={settings} setSettings={updateSettings} categories={categories} setCategories={updateCategories} statuses={statuses} setStatuses={updateStatuses} requesters={requesters} setRequesters={updateRequesters} users={users} onSaveUser={saveUser} onRemoveUser={removeUser} canManageUsers={canManageUsers}/>}</div><aside className="relative hidden border-l bg-white xl:block"><AssistantPanel currentUser={currentUser} buildContext={buildAiContext} tasks={tasks} projects={projects} onOpenTask={(t: Task) => { setSelectedTaskId(t.id); setDrawerOpen(true); }} onOpenProject={() => switchPage('Projects')}/>{drawerOpen && <div data-drawer className="absolute inset-0 z-20 overflow-y-auto bg-white"><TaskDrawer task={selectedTask} projects={projects} onClose={() => setDrawerOpen(false)} onEdit={openEdit} onDelete={deleteTask}/></div>}</aside>{drawerOpen && <div data-drawer className="fixed inset-x-0 bottom-0 top-20 z-30 overflow-y-auto bg-white xl:hidden"><TaskDrawer task={selectedTask} projects={projects} onClose={() => setDrawerOpen(false)} onEdit={openEdit} onDelete={deleteTask}/></div>}</div></section>{modalOpen && <TaskModal form={form} setForm={setForm} onClose={() => setModalOpen(false)} onSave={saveTask} projects={projects} pics={picNames} categories={categories} statuses={statuses}/>}{projectModalOpen && <ProjectModal form={projectForm} setForm={setProjectForm} requesters={requesters} pics={picNames} onClose={() => setProjectModalOpen(false)} onSave={saveProject} onArchive={setProjectArchived}/>}</main>;
 }
 
 function Header({ page, filter, setFilter, exportJson, currentUser, role, logout, notifItems, unreadCount, onMarkSeen, onPickTask }: any) {
@@ -555,6 +573,7 @@ function TimelineView({ tasks, projects, statuses, canEdit, onStatus, onSelect }
             <span className="flex flex-1 flex-wrap items-center justify-center gap-2">
               {String(task.category || '').toLowerCase() === 'finance' && <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800"><Banknote size={13}/>Finance</span>}
               {task.link && <a href={/^https?:[/][/]/i.test(task.link) ? task.link : `https://${task.link}`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-200"><Link2 size={13}/>Attachment</a>}
+              {task.meetLink && <a href={task.meetLink} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-200"><Video size={13}/>Meet</a>}
             </span>
             <span className="flex items-center gap-3 text-sm text-slate-500"><span>{task.startDate} - {task.endDate || task.startDate} · {task.pic}</span><StatusControl task={task} statuses={statuses} editable={canEdit} onChange={(patch) => onStatus(task.id, patch)} /></span>
           </div>
@@ -745,13 +764,13 @@ function ProjectModal({ form, setForm, requesters, pics, onClose, onSave, onArch
 function TeamPage({ pics, setPics, tasks, projects, canManage, onRenamePic }: { pics: Pic[]; setPics: (p: Pic[]) => void; tasks: Task[]; projects: Project[]; canManage: boolean; onRenamePic: (from: string, to: string) => void }) {
   const [modalMode, setModalMode] = useState<null | 'add' | 'edit'>(null);
   const [original, setOriginal] = useState('');
-  const [form, setForm] = useState<Pic>({ name: '', role: '', color: '#38bdf8', photo: '' });
+  const [form, setForm] = useState<Pic>({ name: '', role: '', email: '', color: '#38bdf8', photo: '' });
   const activeProjects = useMemo(() => projects.filter((p) => !isArchived(p) && normProjectStatus(p) === 'Active'), [projects]);
   const activeIds = useMemo(() => new Set(activeProjects.map((p) => p.id)), [activeProjects]);
   const countFor = (name: string) => tasks.filter((t) => t.pic === name && activeIds.has(t.projectId)).length;
   const perProject = (name: string) => activeProjects.map((p) => ({ p, count: tasks.filter((t) => t.pic === name && t.projectId === p.id).length })).filter((x) => x.count > 0);
-  const openAdd = () => { if (!canManage) return; setForm({ name: '', role: '', color: '#38bdf8', photo: '' }); setModalMode('add'); };
-  const openDetail = (pic: Pic) => { setForm({ color: '#38bdf8', role: '', photo: '', ...pic }); setOriginal(pic.name); setModalMode('edit'); };
+  const openAdd = () => { if (!canManage) return; setForm({ name: '', role: '', email: '', color: '#38bdf8', photo: '' }); setModalMode('add'); };
+  const openDetail = (pic: Pic) => { setForm({ color: '#38bdf8', role: '', email: '', photo: '', ...pic }); setOriginal(pic.name); setModalMode('edit'); };
   const save = () => {
     const name = form.name.trim(); if (!name) return;
     if (modalMode === 'add') { if (pics.some((p) => p.name === name)) return; setPics([...pics, { ...form, name }]); }
@@ -783,7 +802,7 @@ function TeamPage({ pics, setPics, tasks, projects, canManage, onRenamePic }: { 
       <div className="max-h-[92vh] w-full max-w-md overflow-auto rounded-2xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-4 flex items-center justify-between"><h3 className="text-lg font-bold">{modalMode === 'add' ? 'Tambah PIC' : 'Detail PIC'}</h3><button onClick={() => setModalMode(null)} className="rounded-lg p-1 hover:bg-slate-100"><X size={18}/></button></div>
         <Field label="Nama"><input className="input" value={form.name} disabled={!canManage} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nama PIC"/></Field>
-        <Field label="Project Role"><input className="input" value={form.role || ''} disabled={!canManage} onChange={(e) => setForm({ ...form, role: e.target.value })} placeholder="cth: Editor, Scriptwriter, Camera"/></Field>
+        <Field label="Project Role"><input className="input" value={form.role || ''} disabled={!canManage} onChange={(e) => setForm({ ...form, role: e.target.value })} placeholder="cth: Editor, Scriptwriter, Camera"/></Field><Field label="Email (untuk undangan Google Calendar)"><input className="input" type="email" value={form.email || ''} disabled={!canManage} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="nama@email.com"/></Field>
         <Field label="Warna card"><input type="color" className="h-11 w-full cursor-pointer rounded-xl border px-1" value={form.color || '#38bdf8'} disabled={!canManage} onChange={(e) => setForm({ ...form, color: e.target.value })}/></Field>
         <Field label="Foto (background card)"><div className="flex items-center gap-3">{form.photo && <img src={form.photo} alt="" className="h-14 w-14 rounded-xl border object-cover"/>}{canManage && <input type="file" accept="image/*" className="text-sm" onChange={async (e) => { const f = e.target.files?.[0]; if (!f) return; try { setForm({ ...form, photo: await fileToThumbnail(f, 256) }); } catch { /* abaikan file invalid */ } }}/>}{form.photo && canManage && <button type="button" onClick={() => setForm({ ...form, photo: '' })} className="rounded-lg border px-2 py-1 text-xs text-slate-500">Hapus</button>}</div></Field>
         {modalMode === 'edit' && <div className="mb-4 rounded-xl bg-slate-50 p-3"><p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Task di Project Aktif · total {countFor(original)}</p>{perProject(original).length === 0 && <p className="text-sm text-slate-400">Tidak ada task di project aktif.</p>}<div className="space-y-1.5">{perProject(original).map(({ p, count }) => <div key={p.id} className="flex items-center justify-between text-sm"><span className="flex items-center gap-2"><i className="h-2.5 w-2.5 rounded-full" style={{ background: p.color }}/>{p.name}</span><b>{count} task</b></div>)}</div></div>}
@@ -815,7 +834,8 @@ function SettingsPage({ settings, setSettings, categories, setCategories, status
 function UserRow({ user, canManageUsers, onSave, onRemove }: { user: AppUser; canManageUsers: boolean; onSave: (u: AppUser, pw?: string) => void; onRemove: (id: string) => void }) { const [name, setName] = useState(user.name); const [role, setRole] = useState(user.role); const [active, setActive] = useState(user.active); const [pwd, setPwd] = useState(''); useEffect(() => { setName(user.name); setRole(user.role); setActive(user.active); }, [user]); if (!canManageUsers) return <tr className="border-b"><td className="p-3 font-semibold">{user.name}</td><td>{user.email}</td><td>{user.role}</td><td>{String(user.active)}</td><td>{user.hasPassword ? '••••••' : '—'}</td><td/></tr>; return <tr className="border-b align-middle"><td className="p-2"><input className="w-36 rounded-lg border px-2 py-1" value={name} onChange={e=>setName(e.target.value)}/></td><td>{user.email}</td><td><select className="rounded-lg border px-2 py-1" value={role} onChange={e=>setRole(e.target.value)}><option>Admin</option><option>Manager</option><option>Member</option><option>Viewer</option></select></td><td><input type="checkbox" checked={active} onChange={e=>setActive(e.target.checked)}/></td><td><input className="w-36 rounded-lg border px-2 py-1" type="password" value={pwd} onChange={e=>setPwd(e.target.value)} placeholder={user.hasPassword ? 'ubah password' : 'set password'}/></td><td className="space-x-2 whitespace-nowrap py-2 text-right"><button onClick={()=>{ onSave({ ...user, name, role, active }, pwd || undefined); setPwd(''); }} className="rounded-lg bg-blue-600 px-3 py-1 font-semibold text-white">Simpan</button><button onClick={()=>onRemove(user.id)} className="rounded-lg border border-red-200 px-3 py-1 text-red-600">Hapus</button></td></tr>; }
 function ListEditor({ title, items, setItems }: any) { const [val, setVal] = useState(''); const add = () => { const v = val.trim(); if (v && !items.includes(v)) { setItems([...items, v]); setVal(''); } }; return <div className="mb-5"><p className="mb-2 text-sm font-semibold text-slate-600">{title}</p><div className="mb-2 flex gap-2"><input className="input" value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') add(); }} placeholder={`Tambah ${title}`}/><button onClick={add} className="rounded-xl border px-4">Tambah</button></div><div className="flex flex-wrap gap-2">{items.map((x: string) => <span key={x} className="group inline-flex items-center gap-1.5 rounded-full bg-slate-100 py-1 pl-3 pr-1.5 text-sm">{x}<button title={`Hapus ${x}`} onClick={() => { if (window.confirm(`Hapus "${x}" dari daftar ${title}?`)) setItems(items.filter((i: string) => i !== x)); }} className="grid h-5 w-5 place-items-center rounded-full text-slate-400 hover:bg-red-100 hover:text-red-600"><X size={12}/></button></span>)}</div></div>; }
 const ROBOT_PALETTE: Record<string, string> = { '#': '#334155', c: '#5eead4', s: '#38bdf8', w: '#f8fafc', e: '#0f172a', m: '#fb7185', p: '#f472b6', y: '#fbbf24' };
-const R_HEAD = ['....####....', '..##cccc##..', '.#cccccccc#.', '#cwwwwwwwwc#', '#cweewweewc#', '#cwwwwwwwwc#', '#cwppmmppwc#', '.#cccccccc#.', '..##cccc##..'];
+const R_HEAD = ['....####....', '..##cccc##..', '.#cccccccc#.', '#cwwwwwwwwc#', '#cwwwwwwwwc#', '#cwwwwwwwwc#', '#cwppmmppwc#', '.#cccccccc#.', '..##cccc##..'];
+function eyeRects(ox: number, oy: number, cell: number, key: string) { return [[3, 4], [4, 4], [7, 4], [8, 4]].map(([c, r], i) => <rect key={`${key}-eye-${i}`} x={(ox + c) * cell} y={(oy + r) * cell} width={cell + 0.4} height={cell + 0.4} fill={ROBOT_PALETTE.e} />); }
 const R_BODY = ['..#ssss#..', '.#ssssss#.', '#ssppppss#', '#ssssssss#', '.#ssssss#.', '..######..'];
 const R_ARM = ['ss', 'ss', 'ss', 'pp'];
 const R_ANTENNA = ['.yy.', '.yy.', '.##.'];
@@ -827,48 +847,62 @@ function pixelRects(map: string[], ox: number, oy: number, cell: number, key: st
 }
 function RobotFace({ size = 24 }: { size?: number }) {
   const cell = size / 12;
-  return <svg width={size} height={size * 9 / 12} viewBox={`0 0 ${12 * cell} ${9 * cell}`} className="shrink-0" aria-hidden>{pixelRects(R_HEAD, 0, 0, cell, 'rf')}</svg>;
+  return <svg width={size} height={size * 9 / 12} viewBox={`0 0 ${12 * cell} ${9 * cell}`} className="shrink-0" aria-hidden>{pixelRects(R_HEAD, 0, 0, cell, 'rf')}{eyeRects(0, 0, cell, 'rf')}</svg>;
 }
 function RobotMascot() {
   const cell = 6;
   return <svg viewBox="0 0 108 128" width="132" className="rm-svg" role="img" aria-label="Maskot asisten robot">
     <g className="rm-float">
-      <g className="rm-spin">
-        <g transform="translate(0,26)">
-          {pixelRects(R_BODY, 4, 8, cell, 'body')}
-          {pixelRects(R_ARM, 2, 9, cell, 'arml')}
-          <g className="rm-arm">{pixelRects(R_ARM, 14, 9, cell, 'armr')}</g>
-          <g className="rm-head">
-            {pixelRects(R_PIGTAIL, 1, 3, cell, 'ptl')}
-            {pixelRects(R_PIGTAIL, 15, 3, cell, 'ptr')}
-            {pixelRects(R_ANTENNA, 7, -3, cell, 'ant')}
-            {pixelRects(R_HEAD, 3, 0, cell, 'head')}
-          </g>
+      <g transform="translate(0,26)">
+        {pixelRects(R_BODY, 4, 8, cell, 'body')}
+        {pixelRects(R_ARM, 2, 9, cell, 'arml')}
+        <g className="rm-arm">{pixelRects(R_ARM, 14, 9, cell, 'armr')}</g>
+        <g className="rm-head">
+          {pixelRects(R_PIGTAIL, 1, 3, cell, 'ptl')}
+          {pixelRects(R_PIGTAIL, 15, 3, cell, 'ptr')}
+          {pixelRects(R_ANTENNA, 7, -3, cell, 'ant')}
+          {pixelRects(R_HEAD, 3, 0, cell, 'head')}
+          <g className="rm-eyes">{eyeRects(3, 0, cell, 'head')}</g>
         </g>
       </g>
     </g>
   </svg>;
 }
 
-function AssistantPanel({ currentUser, buildContext }: { currentUser: AppUser | null; buildContext: () => string }) {
+function chatDayLabel(ts: number) { const d = new Date(ts); const now = new Date(); const y = new Date(Date.now() - 86400000); if (d.toDateString() === now.toDateString()) return 'Hari ini'; if (d.toDateString() === y.toDateString()) return 'Kemarin'; return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }); }
+
+function AssistantPanel({ currentUser, buildContext, tasks, projects, onOpenTask, onOpenProject }: { currentUser: AppUser | null; buildContext: () => string; tasks: Task[]; projects: Project[]; onOpenTask: (t: Task) => void; onOpenProject: (p: Project) => void }) {
   const storeKey = `timeline-ai-chat-${currentUser?.email || 'anon'}`;
-  const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; content: string; ts?: number }[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { try { const s = window.localStorage.getItem(storeKey); setMessages(s ? JSON.parse(s) : []); } catch { setMessages([]); } }, [storeKey]);
+  useEffect(() => { try { const s = window.localStorage.getItem(storeKey); const arr = (s ? JSON.parse(s) : []) as { role: 'user' | 'assistant'; content: string; ts?: number }[]; const cutoff = Date.now() - 30 * 86400000; setMessages(arr.map((m) => ({ ...m, ts: m.ts || Date.now() })).filter((m) => (m.ts as number) >= cutoff).slice(-200)); } catch { setMessages([]); } }, [storeKey]);
   useEffect(() => { try { window.localStorage.setItem(storeKey, JSON.stringify(messages)); } catch { /* penuh */ } if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, storeKey, loading]);
   async function send(text?: string) {
     const q = (text ?? input).trim();
     if (!q || loading) return;
-    const next = [...messages, { role: 'user' as const, content: q }];
+    const next = [...messages, { role: 'user' as const, content: q, ts: Date.now() }];
     setMessages(next); setInput(''); setLoading(true);
     try {
       const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: next.slice(-12), context: buildContext() }) });
       const data = await res.json();
-      setMessages((m) => [...m, { role: 'assistant', content: res.ok ? data.text : `⚠️ ${data.message || 'Gagal menjawab.'}` }]);
-    } catch { setMessages((m) => [...m, { role: 'assistant', content: '⚠️ Koneksi ke asisten gagal.' }]); }
+      setMessages((m) => [...m, { role: 'assistant', content: res.ok ? data.text : `⚠️ ${data.message || 'Gagal menjawab.'}`, ts: Date.now() }]);
+    } catch { setMessages((m) => [...m, { role: 'assistant', content: '⚠️ Koneksi ke asisten gagal.', ts: Date.now() }]); }
     finally { setLoading(false); }
+  }
+  function renderMsg(text: string) {
+    const re = /\[\[(task|project):([^\]]+)\]\]/g;
+    const nodes: React.ReactNode[] = []; let last = 0; let mch: RegExpExecArray | null; let k = 0;
+    while ((mch = re.exec(text))) {
+      if (mch.index > last) nodes.push(text.slice(last, mch.index));
+      const kind = mch[1]; const name = mch[2].trim();
+      if (kind === 'task') { const t = tasks.find((x) => x.title.toLowerCase() === name.toLowerCase()) || tasks.find((x) => x.title.toLowerCase().includes(name.toLowerCase())); nodes.push(t ? <button key={`c${k++}`} onClick={() => onOpenTask(t)} className="mx-0.5 inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 align-baseline text-xs font-semibold text-blue-700 hover:bg-blue-200">! {name}</button> : <b key={`c${k++}`}>{name}</b>); }
+      else { const p = projects.find((x) => x.name.toLowerCase() === name.toLowerCase()) || projects.find((x) => x.name.toLowerCase().includes(name.toLowerCase())); nodes.push(p ? <button key={`c${k++}`} onClick={() => onOpenProject(p)} className="mx-0.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-baseline text-xs font-semibold hover:brightness-95" style={{ background: `${p.color}22`, color: p.color }}><i className="h-1.5 w-1.5 rounded-full" style={{ background: p.color }} />{name}</button> : <b key={`c${k++}`}>{name}</b>); }
+      last = re.lastIndex;
+    }
+    if (last < text.length) nodes.push(text.slice(last));
+    return nodes;
   }
   const suggestions = ['Ringkas progress bulan ini untuk laporan', 'PIC mana yang paling overload?', 'Task apa saja yang overdue?', 'Bandingkan budget vs realisasi tiap project'];
   return <div className="sticky top-20 flex h-[calc(100vh-80px)] flex-col">
@@ -880,11 +914,15 @@ function AssistantPanel({ currentUser, buildContext }: { currentUser: AppUser | 
       {messages.length === 0 && <div className="mt-2">
         <div className="mb-3 flex items-center gap-2 rounded-xl bg-blue-50 p-3 text-xs text-blue-800"><Bot size={16} className="shrink-0"/>Aku bisa merangkum data project & task-mu. Coba salah satu:</div>
         <div className="space-y-2">{suggestions.map((s) => <button key={s} onClick={() => send(s)} className="block w-full rounded-xl border px-3 py-2 text-left text-sm hover:bg-slate-50">{s}</button>)}</div>
-        <div className="mt-6 flex flex-col items-center"><RobotMascot /><p className="mt-1 text-xs font-medium text-slate-400">Hai! Aku siap bantu 👋</p></div>
+        <div className="mt-6 flex flex-col items-center"><RobotMascot /><p className="mt-1 text-xs font-medium text-slate-400">Hai! Ailinu siap bantu 👋</p></div>
       </div>}
-      {messages.map((m, i) => m.role === 'user'
-        ? <div key={i} className="flex justify-end"><div className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-blue-600 px-3.5 py-2.5 text-sm text-white">{m.content}</div></div>
-        : <div key={i} className="flex items-start justify-start gap-2"><span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-teal-50 ring-1 ring-teal-100"><RobotFace size={20} /></span><div className="max-w-[80%] whitespace-pre-wrap rounded-2xl border bg-white px-3.5 py-2.5 text-sm text-slate-800">{m.content}</div></div>)}
+      {(() => { const nodes: React.ReactNode[] = []; let lastDay = ''; messages.forEach((m, i) => {
+        const ts = m.ts || Date.now(); const day = new Date(ts).toDateString();
+        if (day !== lastDay) { lastDay = day; nodes.push(<div key={`div-${i}`} className="my-3 flex items-center gap-2 text-[11px] font-medium text-slate-400"><span className="h-px flex-1 bg-slate-100" />{chatDayLabel(ts)}<span className="h-px flex-1 bg-slate-100" /></div>); }
+        nodes.push(m.role === 'user'
+          ? <div key={i} className="flex justify-end"><div className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-blue-600 px-3.5 py-2.5 text-sm text-white">{m.content}</div></div>
+          : <div key={i} className="flex items-start justify-start gap-2"><span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-teal-50 ring-1 ring-teal-100"><RobotFace size={20} /></span><div className="max-w-[80%] whitespace-pre-wrap rounded-2xl border bg-white px-3.5 py-2.5 text-sm text-slate-800">{renderMsg(m.content)}</div></div>);
+      }); return nodes; })()}
       {loading && <div className="flex items-start justify-start gap-2"><span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-teal-50 ring-1 ring-teal-100"><RobotFace size={20} /></span><div className="rounded-2xl border bg-white px-3.5 py-2.5 text-sm text-slate-400">Mengetik…</div></div>}
     </div>
     <div className="border-t p-3">
@@ -897,7 +935,7 @@ function AssistantPanel({ currentUser, buildContext }: { currentUser: AppUser | 
   </div>;
 }
 
-function TaskDrawer({ task, projects, onClose, onEdit, onDelete }: any) { if (!task) return <aside data-drawer className="border-l bg-white p-6"><button onClick={onClose} className="float-right"><X /></button><p className="mt-12 text-slate-500">Belum ada task dipilih.</p></aside>; const project = projectById(projects, task.projectId); const overdue = isOverdue(task); const due = !overdue && effectiveStatus(task) !== 'Done' && parseIso(task.endDate || task.startDate).getTime() - new Date().getTime() <= 3 * 86400000; return <aside data-drawer className="min-h-[calc(100vh-80px)] border-l bg-white p-6 shadow-soft"><div className="mb-8 flex items-center justify-between"><h3 className="text-lg font-bold">Detail Task</h3><button onClick={onClose} className="rounded-lg p-2 hover:bg-slate-100"><X size={18}/></button></div><p className="mb-4 flex items-center gap-2 text-sm font-semibold" style={{ color: project.color }}><i className="h-3 w-3 rounded-full" style={{ background: project.color }} />{project.name}</p><h2 className="mb-4 text-2xl font-bold leading-tight">{task.title}</h2>{overdue && <div className="mb-4 flex gap-2 rounded-xl bg-rose-50 p-3 text-sm font-semibold text-rose-700"><AlertTriangle size={18}/>Sudah lewat deadline (Overdue)</div>}{due && <div className="mb-4 flex gap-2 rounded-xl bg-orange-50 p-3 text-sm font-semibold text-orange-700"><AlertTriangle size={18}/>Deadline mendekat</div>}<Detail label="Tanggal" value={`${task.startDate}${task.endDate ? ` - ${task.endDate}` : ''}`} /><Detail label="Jam" value={`${task.startTime || '-'}${task.endTime ? ` - ${task.endTime}` : ''}`} /><Detail label="PIC" value={task.pic} /><div className="mb-5 border-b pb-4"><p className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-500">Status</p><div className="mt-1 flex items-center gap-2">{(() => { const m = statusMeta(displayStatus(task)); return <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold" style={{ background: m.bg, color: m.text }}><i className="h-2 w-2 rounded-full" style={{ background: m.dot }} />{displayStatus(task)}</span>; })()}<span className="text-xs text-slate-400">{task.statusMode === 'auto' ? 'mode otomatis (ikuti tanggal)' : 'mode manual'}</span></div></div><Detail label="Kategori" value={task.category} /><Detail label="Deskripsi" value={task.notes || '-'} /><div className="mb-5 border-b pb-4"><p className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-500">Attachment / Link</p>{task.link ? <a href={/^https?:\/\//i.test(task.link) ? task.link : `https://${task.link}`} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-1.5 break-all text-sm font-semibold text-blue-600 hover:underline"><Link2 size={14} className="shrink-0"/>{task.link}</a> : <p className="text-sm text-slate-700">-</p>}</div><div className="fixed bottom-0 right-0 flex w-full gap-3 border-t bg-white p-4 xl:w-[360px]"><button onClick={() => onEdit(task)} className="flex flex-1 items-center justify-center gap-2 rounded-xl border px-4 py-3 font-semibold hover:bg-slate-100"><Save size={16}/>Edit</button><button onClick={() => onDelete(task.id)} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-red-200 px-4 py-3 font-semibold text-red-600 hover:bg-red-50"><Trash2 size={16}/>Hapus</button></div></aside>; }
+function TaskDrawer({ task, projects, onClose, onEdit, onDelete }: any) { if (!task) return <aside data-drawer className="border-l bg-white p-6"><button onClick={onClose} className="float-right"><X /></button><p className="mt-12 text-slate-500">Belum ada task dipilih.</p></aside>; const project = projectById(projects, task.projectId); const overdue = isOverdue(task); const due = !overdue && effectiveStatus(task) !== 'Done' && parseIso(task.endDate || task.startDate).getTime() - new Date().getTime() <= 3 * 86400000; return <aside data-drawer className="min-h-[calc(100vh-80px)] border-l bg-white p-6 shadow-soft"><div className="mb-8 flex items-center justify-between"><h3 className="text-lg font-bold">Detail Task</h3><button onClick={onClose} className="rounded-lg p-2 hover:bg-slate-100"><X size={18}/></button></div><p className="mb-4 flex items-center gap-2 text-sm font-semibold" style={{ color: project.color }}><i className="h-3 w-3 rounded-full" style={{ background: project.color }} />{project.name}</p><h2 className="mb-4 text-2xl font-bold leading-tight">{task.title}</h2>{overdue && <div className="mb-4 flex gap-2 rounded-xl bg-rose-50 p-3 text-sm font-semibold text-rose-700"><AlertTriangle size={18}/>Sudah lewat deadline (Overdue)</div>}{due && <div className="mb-4 flex gap-2 rounded-xl bg-orange-50 p-3 text-sm font-semibold text-orange-700"><AlertTriangle size={18}/>Deadline mendekat</div>}<Detail label="Tanggal" value={`${task.startDate}${task.endDate ? ` - ${task.endDate}` : ''}`} /><Detail label="Jam" value={`${task.startTime || '-'}${task.endTime ? ` - ${task.endTime}` : ''}`} /><Detail label="PIC" value={task.pic} /><div className="mb-5 border-b pb-4"><p className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-500">Status</p><div className="mt-1 flex items-center gap-2">{(() => { const m = statusMeta(displayStatus(task)); return <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold" style={{ background: m.bg, color: m.text }}><i className="h-2 w-2 rounded-full" style={{ background: m.dot }} />{displayStatus(task)}</span>; })()}<span className="text-xs text-slate-400">{task.statusMode === 'auto' ? 'mode otomatis (ikuti tanggal)' : 'mode manual'}</span></div></div><Detail label="Kategori" value={task.category} /><Detail label="Deskripsi" value={task.notes || '-'} /><div className="mb-5 border-b pb-4"><p className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-500">Attachment / Link</p>{task.link ? <a href={/^https?:\/\//i.test(task.link) ? task.link : `https://${task.link}`} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-1.5 break-all text-sm font-semibold text-blue-600 hover:underline"><Link2 size={14} className="shrink-0"/>{task.link}</a> : <p className="text-sm text-slate-700">-</p>}</div>{(task.meetLink || task.invite) && <div className="mb-5 border-b pb-4"><p className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-500">Google Meet</p>{task.meetLink ? <a href={task.meetLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 break-all text-sm font-semibold text-emerald-600 hover:underline"><Video size={14} className="shrink-0"/>Gabung Google Meet</a> : <p className="text-sm text-slate-500">Event dibuat, link Meet belum tersedia (aktifkan Advanced Calendar Service untuk Meet otomatis).</p>}{task.invite ? <p className="mt-1 text-xs text-slate-500">Diundang: {task.invite}</p> : null}</div>}<div className="fixed bottom-0 right-0 flex w-full gap-3 border-t bg-white p-4 xl:w-[360px]"><button onClick={() => onEdit(task)} className="flex flex-1 items-center justify-center gap-2 rounded-xl border px-4 py-3 font-semibold hover:bg-slate-100"><Save size={16}/>Edit</button><button onClick={() => onDelete(task.id)} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-red-200 px-4 py-3 font-semibold text-red-600 hover:bg-red-50"><Trash2 size={16}/>Hapus</button></div></aside>; }
 function Detail({ label, value }: { label: string; value: string }) { return <div className="mb-5 border-b pb-4"><p className="mb-1 text-xs font-bold uppercase tracking-wide text-slate-500">{label}</p><p className="text-sm leading-relaxed text-slate-700">{value}</p></div>; }
-function TaskModal({ form, setForm, onClose, onSave, projects, pics, categories, statuses }: any) { return <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4"><div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-soft"><div className="mb-5 flex items-center justify-between"><h2 className="text-xl font-bold">{form.id ? 'Edit Task' : 'Tambah Task'}</h2><button onClick={onClose}><X /></button></div><div className="grid gap-3 md:grid-cols-2"><Field className="md:col-span-2" label="Judul task"><input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Contoh: Presentasi Internal Video" className="input" /></Field><Field label="Project"><select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })} className="input">{projects.map((project: Project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></Field><Field label="PIC"><select value={form.pic} onChange={(e) => setForm({ ...form, pic: e.target.value })} className="input">{pics.map((pic: string) => <option key={pic}>{pic}</option>)}</select></Field><Field label="Tanggal mulai"><input type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className="input" /></Field><Field label="Tanggal selesai"><input type="date" value={form.endDate || ''} onChange={(e) => setForm({ ...form, endDate: e.target.value })} className="input" /></Field><Field label="Jam mulai"><input type="time" value={form.startTime || ''} onChange={(e) => setForm({ ...form, startTime: e.target.value })} className="input" /></Field><Field label="Jam selesai"><input type="time" value={form.endTime || ''} onChange={(e) => setForm({ ...form, endTime: e.target.value })} className="input" /></Field><Field label="Status"><select disabled={form.statusMode === 'auto'} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as Status })} className="input disabled:cursor-not-allowed disabled:opacity-50">{statuses.map((status: string) => <option key={status}>{status}</option>)}</select><label className="mt-2 flex items-start gap-2 text-xs font-medium text-slate-600"><input type="checkbox" className="mt-0.5" checked={form.statusMode === 'auto'} onChange={(e) => setForm({ ...form, statusMode: e.target.checked ? 'auto' : 'manual' })} />Otomatis ikuti tanggal (Planned sebelum mulai, Progress saat berjalan, merah bila lewat deadline)</label></Field><Field label="Kategori"><select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="input">{categories.map((category: string) => <option key={category}>{category}</option>)}</select></Field><Field className="md:col-span-2" label="Catatan"><textarea value={form.notes || ''} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="input min-h-24" /></Field><Field className="md:col-span-2" label="Link"><input value={form.link || ''} onChange={(e) => setForm({ ...form, link: e.target.value })} className="input" /></Field></div><div className="mt-6 flex justify-end gap-3"><button onClick={onClose} className="rounded-xl border px-5 py-3 font-semibold">Batal</button><button onClick={onSave} className="rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white">Simpan Task</button></div></div></div>; }
+function TaskModal({ form, setForm, onClose, onSave, projects, pics, categories, statuses }: any) { return <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4"><div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-soft"><div className="mb-5 flex items-center justify-between"><h2 className="text-xl font-bold">{form.id ? 'Edit Task' : 'Tambah Task'}</h2><button onClick={onClose}><X /></button></div><div className="grid gap-3 md:grid-cols-2"><Field className="md:col-span-2" label="Judul task"><input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Contoh: Presentasi Internal Video" className="input" /></Field><Field label="Project"><select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })} className="input">{projects.map((project: Project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></Field><Field label="PIC"><select value={form.pic} onChange={(e) => setForm({ ...form, pic: e.target.value })} className="input">{pics.map((pic: string) => <option key={pic}>{pic}</option>)}</select></Field><Field label="Tanggal mulai"><input type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className="input" /></Field><Field label="Tanggal selesai"><input type="date" value={form.endDate || ''} onChange={(e) => setForm({ ...form, endDate: e.target.value })} className="input" /></Field><Field label="Jam mulai"><select value={form.startTime || ''} onChange={(e) => setForm({ ...form, startTime: e.target.value })} className="input"><option value="">—</option>{TIME_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}</select></Field><Field label="Jam selesai"><select value={form.endTime || ''} onChange={(e) => setForm({ ...form, endTime: e.target.value })} className="input"><option value="">—</option>{TIME_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}</select></Field><Field label="Status"><select disabled={form.statusMode === 'auto'} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as Status })} className="input disabled:cursor-not-allowed disabled:opacity-50">{statuses.map((status: string) => <option key={status}>{status}</option>)}</select><label className="mt-2 flex items-start gap-2 text-xs font-medium text-slate-600"><input type="checkbox" className="mt-0.5" checked={form.statusMode === 'auto'} onChange={(e) => setForm({ ...form, statusMode: e.target.checked ? 'auto' : 'manual' })} />Otomatis ikuti tanggal (Planned sebelum mulai, Progress saat berjalan, merah bila lewat deadline)</label></Field><Field label="Kategori"><select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="input">{categories.map((category: string) => <option key={category}>{category}</option>)}</select></Field><Field className="md:col-span-2" label="Catatan"><textarea value={form.notes || ''} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="input min-h-24" /></Field><Field className="md:col-span-2" label="Link"><input value={form.link || ''} onChange={(e) => setForm({ ...form, link: e.target.value })} className="input" /></Field>{String(form.category || '').toLowerCase() === 'meeting' && <Field className="md:col-span-2" label="Invite (email, pisah koma) — untuk Google Calendar"><input value={form.invite || ''} onChange={(e) => setForm({ ...form, invite: e.target.value })} placeholder="orang1@email.com, orang2@email.com" className="input" /><p className="mt-1 text-xs text-slate-500">Secara default SEMUA PIC (menu PIC/Team) yang punya email otomatis diundang. Kolom ini khusus untuk mengundang orang DI LUAR menu PIC. Task Meeting dibuatkan event di kalender "Timeline Meetings" (default 10:00, 1 jam bila jam kosong).{form.meetLink ? <> Link Meet: <a href={form.meetLink} target="_blank" rel="noreferrer" className="font-semibold text-blue-600 hover:underline">buka</a>.</> : null}</p></Field>}</div><div className="mt-6 flex justify-end gap-3"><button onClick={onClose} className="rounded-xl border px-5 py-3 font-semibold">Batal</button><button onClick={onSave} className="rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white">Simpan Task</button></div></div></div>; }
 function Field({ label, children, className = '' }: { label: string; children: React.ReactNode; className?: string }) { return <label className={`mb-3 block ${className}`}><span className="mb-1 block text-sm font-semibold text-slate-600">{label}</span>{children}</label>; }

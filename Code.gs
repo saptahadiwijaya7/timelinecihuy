@@ -20,7 +20,7 @@ const SHEETS = {
   settings: 'Settings'
 };
 
-const TASK_HEADERS = ['id','title','projectId','pic','startDate','endDate','startTime','endTime','status','category','notes','link','createdAt','updatedAt','statusMode'];
+const TASK_HEADERS = ['id','title','projectId','pic','startDate','endDate','startTime','endTime','status','category','notes','link','createdAt','updatedAt','statusMode','invite','meetLink','calendarEventId'];
 const PROJECT_HEADERS = ['id','name','color','status','startMonth','requester','pic','outputLandscape','outputVertical','distribusi','lokasi1','lokasi2','folderLink','budget','flag','thumbnail','notes','archived','description','actualCost'];
 const PIC_HEADERS = ['name','role','email','status','color','photo'];
 const LIST_HEADERS = ['name'];
@@ -66,7 +66,7 @@ function doPost(e) {
       case 'deleteProject':
         return jsonResponse(withLock(function () { return { success: true, deleted: deleteRowById(SHEETS.projects, PROJECT_HEADERS, payload.id) }; }));
       case 'deleteTask':
-        return jsonResponse(withLock(function () { return { success: true, deleted: deleteRowById(SHEETS.tasks, TASK_HEADERS, payload.id) }; }));
+        return jsonResponse(withLock(function () { return { success: true, deleted: deleteTaskWithEvent(payload.id) }; }));
       case 'upsertUser':
         return jsonResponse(withLock(function () { return { success: true, user: upsertUser(payload.user || {}, payload.newPassword) }; }));
       case 'deleteUser':
@@ -284,10 +284,116 @@ function upsertRowById(sheetName, headers, obj) {
 function upsertTask(task) {
   var sh = getSheet(SHEETS.tasks);
   var row = task.id ? findRowById(SHEETS.tasks, TASK_HEADERS, task.id) : -1;
+  var existing = row > 0 ? readRow(SHEETS.tasks, TASK_HEADERS, row) : null;
+  // Integrasi Google Calendar untuk task kategori "Meeting" (best-effort; kegagalan tidak menggagalkan simpan task).
+  try {
+    var isMeeting = String(task.category || '').toLowerCase() === 'meeting';
+    var prevEventId = existing ? existing.calendarEventId : '';
+    if (isMeeting && (task.startDate)) {
+      var r = syncMeetingEvent(task, prevEventId);
+      task.calendarEventId = r.eventId;
+      task.meetLink = r.meetLink;
+    } else if (prevEventId) {
+      deleteCalendarEvent(prevEventId);
+      task.calendarEventId = '';
+      task.meetLink = '';
+    }
+  } catch (eCal) { task._calendarWarning = String(eCal); }
   var values = rowValues(TASK_HEADERS, task);
   if (row > 0) sh.getRange(row, 1, 1, TASK_HEADERS.length).setValues([values]);
   else sh.appendRow(values);
   return task;
+}
+
+function deleteTaskWithEvent(id) {
+  var row = findRowById(SHEETS.tasks, TASK_HEADERS, id);
+  if (row < 0) return false;
+  var t = readRow(SHEETS.tasks, TASK_HEADERS, row);
+  if (t.calendarEventId) { try { deleteCalendarEvent(t.calendarEventId); } catch (e) {} }
+  getSheet(SHEETS.tasks).deleteRow(row);
+  return true;
+}
+
+/* ===== Google Calendar (kalender khusus "Timeline Meetings") ===== */
+function getMeetingsCalendar() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('MEETINGS_CALENDAR_ID');
+  if (id) { var c = CalendarApp.getCalendarById(id); if (c) return c; }
+  var existing = CalendarApp.getCalendarsByName('Timeline Meetings');
+  var cal = (existing && existing.length) ? existing[0] : CalendarApp.createCalendar('Timeline Meetings');
+  props.setProperty('MEETINGS_CALENDAR_ID', cal.getId());
+  return cal;
+}
+function resolveEmail(name) {
+  if (!name) return '';
+  var users = readObjects(SHEETS.users, USER_HEADERS);
+  for (var i = 0; i < users.length; i++) { if (String(users[i].name).toLowerCase() === String(name).toLowerCase() && users[i].email) return String(users[i].email); }
+  var pics = readObjects(SHEETS.pics, PIC_HEADERS);
+  for (var j = 0; j < pics.length; j++) { if (String(pics[j].name).toLowerCase() === String(name).toLowerCase() && pics[j].email) return String(pics[j].email); }
+  return '';
+}
+function buildEventTimes(task) {
+  var sd = String(task.startDate || ''); if (!sd) return null;
+  var ed = String(task.endDate || task.startDate || '');
+  function mk(dateStr, timeStr, defH, defM) { var p = dateStr.split('-'); var h = defH, m = defM; if (timeStr && String(timeStr).indexOf(':') >= 0) { var t = String(timeStr).split(':'); h = parseInt(t[0], 10); m = parseInt(t[1], 10); } return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]), h, m, 0); }
+  var st = String(task.startTime || ''), et = String(task.endTime || '');
+  var start = mk(sd, st, 10, 0);
+  var end;
+  if (et) end = mk(ed, et, 11, 0);
+  else if (st) end = new Date(start.getTime() + 3600000);
+  else end = mk(ed, '', 11, 0);
+  if (end <= start) end = new Date(start.getTime() + 3600000);
+  return { start: start, end: end };
+}
+function collectGuests(task) {
+  var set = {};
+  // Default: undang SEMUA PIC di menu PIC/Team yang punya email (atau bisa di-resolve dari Users).
+  var pics = readObjects(SHEETS.pics, PIC_HEADERS);
+  pics.forEach(function (p) { var e = p.email ? String(p.email).trim() : (p.name ? resolveEmail(p.name) : ''); if (e && e.indexOf('@') > 0) set[e.toLowerCase()] = true; });
+  // Kolom "Invite" pada task: untuk orang DI LUAR menu PIC.
+  String(task.invite || '').split(/[,;\s]+/).forEach(function (e) { e = String(e).trim(); if (e.indexOf('@') > 0) set[e.toLowerCase()] = true; });
+  return Object.keys(set);
+}
+function syncMeetingEvent(task, existingEventId) {
+  var times = buildEventTimes(task);
+  if (!times) return { eventId: existingEventId || '', meetLink: task.meetLink || '' };
+  var cal = getMeetingsCalendar();
+  var calId = cal.getId();
+  var guests = collectGuests(task);
+  var desc = 'Task Timeline: ' + (task.title || '') + (task.notes ? ('\n\n' + task.notes) : '');
+  var advancedOk = (typeof Calendar !== 'undefined' && Calendar.Events);
+  if (advancedOk) {
+    try {
+      var resource = {
+        summary: task.title || 'Meeting', description: desc,
+        start: { dateTime: times.start.toISOString() }, end: { dateTime: times.end.toISOString() },
+        attendees: guests.map(function (e) { return { email: e }; }),
+        conferenceData: { createRequest: { requestId: 'tl-' + (task.id || Utilities.getUuid()), conferenceSolutionKey: { type: 'hangoutsMeet' } } }
+      };
+      var res;
+      if (existingEventId) { try { res = Calendar.Events.patch(resource, calId, existingEventId, { conferenceDataVersion: 1, sendUpdates: 'all' }); } catch (e0) { res = Calendar.Events.insert(resource, calId, { conferenceDataVersion: 1, sendUpdates: 'all' }); } }
+      else { res = Calendar.Events.insert(resource, calId, { conferenceDataVersion: 1, sendUpdates: 'all' }); }
+      var link = res.hangoutLink || (res.conferenceData && res.conferenceData.entryPoints && res.conferenceData.entryPoints[0] ? res.conferenceData.entryPoints[0].uri : '');
+      return { eventId: res.id, meetLink: link || '' };
+    } catch (eAdv) { /* fallback ke CalendarApp */ }
+  }
+  var ev = null;
+  if (existingEventId) { try { ev = cal.getEventById(existingEventId); } catch (e1) { ev = null; } }
+  if (ev) {
+    ev.setTitle(task.title || 'Meeting'); ev.setTime(times.start, times.end); ev.setDescription(desc);
+    var current = {}; ev.getGuestList().forEach(function (g) { current[g.getEmail().toLowerCase()] = true; });
+    guests.forEach(function (e) { if (!current[e.toLowerCase()]) { try { ev.addGuest(e); } catch (e2) {} } });
+    return { eventId: existingEventId, meetLink: task.meetLink || '' };
+  }
+  var newEv = cal.createEvent(task.title || 'Meeting', times.start, times.end, { description: desc, guests: guests.join(','), sendInvites: true });
+  return { eventId: newEv.getId(), meetLink: '' };
+}
+function deleteCalendarEvent(eventId) {
+  if (!eventId) return;
+  var cal = getMeetingsCalendar();
+  var advancedOk = (typeof Calendar !== 'undefined' && Calendar.Events);
+  if (advancedOk) { try { Calendar.Events.remove(cal.getId(), eventId, { sendUpdates: 'all' }); return; } catch (e) {} }
+  try { var ev = cal.getEventById(eventId); if (ev) ev.deleteEvent(); } catch (e2) {}
 }
 
 function deleteRowById(sheetName, headers, id) {

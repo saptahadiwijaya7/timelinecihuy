@@ -34,11 +34,11 @@ html { font-size: 12.8px; }
    yang hanya beraksi di sebagian kecil timeline, dengan periode berbeda tiap bagian. */
 .rm-svg { image-rendering: pixelated; overflow: visible; }
 .rm-float { animation: rmFloat 3.2s ease-in-out infinite; }
-.rm-spin { animation: rmSpin 9s ease-in-out infinite; transform-box: fill-box; transform-origin: 50% 60%; }
+.rm-eyes { animation: rmBlink 4.5s steps(1, end) infinite; transform-box: fill-box; transform-origin: 50% 50%; }
 .rm-head { animation: rmTilt 7s ease-in-out infinite; transform-box: fill-box; transform-origin: 50% 88%; }
 .rm-arm { animation: rmWave 5s ease-in-out infinite; transform-box: fill-box; transform-origin: 50% 0%; }
 @keyframes rmFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
-@keyframes rmSpin { 0%, 86%, 100% { transform: scaleX(1); } 90% { transform: scaleX(0.06); } 93% { transform: scaleX(-1); } 96% { transform: scaleX(0.06); } 99% { transform: scaleX(1); } }
+@keyframes rmBlink { 0%, 90%, 100% { transform: scaleY(1); } 93% { transform: scaleY(0.1); } 96% { transform: scaleY(1); } }
 @keyframes rmTilt { 0%, 68%, 100% { transform: rotate(0); } 74% { transform: rotate(-10deg); } 82% { transform: rotate(9deg); } 90% { transform: rotate(0); } }
 @keyframes rmWave { 0%, 58%, 100% { transform: rotate(0); } 64% { transform: rotate(-38deg); } 70% { transform: rotate(-12deg); } 76% { transform: rotate(-38deg); } 82% { transform: rotate(0); } }
-@media (prefers-reduced-motion: reduce) { .rm-float, .rm-spin, .rm-head, .rm-arm { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .rm-float, .rm-eyes, .rm-head, .rm-arm { animation: none; } }

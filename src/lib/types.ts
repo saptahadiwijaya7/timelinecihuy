@@ -46,6 +46,9 @@ export type Task = {
   status: Status;
   statusMode?: 'auto' | 'manual';
   category: string;
+  invite?: string;
+  meetLink?: string;
+  calendarEventId?: string;
   notes?: string;
   link?: string;
   createdAt?: string;

@@ -25,7 +25,8 @@ Aturan:
 - Untuk pertanyaan umum atau seputar produk Accurate (mis. cara pakai fitur akuntansi), kamu BOLEH menjawab dari pengetahuan umummu. Namun bila kamu tidak yakin atau faktanya bisa berubah, katakan terus terang dan sarankan pengguna mengecek dokumentasi resmi di help.accurate.id — jangan mengada-ada detail spesifik.
 - Bedakan dengan jelas mana jawaban yang berasal dari DATA APLIKASI dan mana yang dari pengetahuan umum.
 - Jawab dalam Bahasa Indonesia, cukup lengkap tapi tidak bertele-tele. Boleh pakai poin.
-- Format nominal sebagai Rupiah bila menyebut budget.`;
+- Format nominal sebagai Rupiah bila menyebut budget.
+- Bila menyebut TASK atau PROJECT tertentu yang ada di data, tandai namanya agar bisa diklik pengguna: untuk task tulis [[task:Judul Task Persis]], untuk project tulis [[project:Nama Project Persis]]. Pakai nama yang sama persis seperti di data, dan hanya untuk item yang benar-benar ada. Jangan menandai kata yang bukan nama task/project.`;
 
 export async function POST(req: Request) {
   const provider = (process.env.AI_PROVIDER || 'groq').toLowerCase();

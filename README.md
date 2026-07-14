@@ -185,3 +185,28 @@ Default: **Groq** — gratis, tanpa kartu kredit (~1.000 request/hari).
 3. Redeploy.
 
 Pindah provider kapan saja tanpa ubah kode: set `AI_PROVIDER` ke `openai` / `openrouter` / `gemini` dan isi `AI_API_KEY` yang sesuai (base URL & model default otomatis mengikuti; bisa dioverride via `AI_BASE_URL` / `AI_MODEL`). Variabel `GEMINI_API_KEY` lama tetap dikenali sebagai fallback bila `AI_PROVIDER=gemini`.
+
+## Update v1.9.0 — Integrasi Google Calendar (task kategori "Meeting")
+Task berkategori "Meeting" otomatis dibuatkan event di kalender khusus **"Timeline Meetings"** (dibuat sekali otomatis).
+- Judul = judul task, tanggal/jam = data task (bila jam kosong: default 10:00, durasi 1 jam).
+- Undangan = email PIC (dari data PIC/User) + field "Invite" manual per task. Tamu menerima email undangan.
+- Edit task → event ikut diperbarui; hapus task → event ikut terhapus.
+- Link Google Meet: dibuat otomatis **bila** Advanced Calendar Service aktif; jika tidak, event tetap dibuat tanpa Meet.
+
+### Setup (tanpa Google Cloud Console)
+1. Paste `Code.gs` baru → jalankan `ensureSheets` sekali (menambah kolom `invite`, `meetLink`, `calendarEventId` di Tasks). Saat dijalankan pertama, Google akan meminta izin akses **Calendar** — setujui.
+2. **New Version** deployment.
+3. (Opsional, untuk link Meet otomatis) Di editor Apps Script: **Services (+) → Google Calendar API → Add**. Ini toggle di editor, bukan Cloud Console. Bila diblokir admin Workspace, lewati saja — event tetap jalan tanpa Meet.
+4. Isi email PIC di menu PIC / Team agar bisa diundang.
+
+Catatan: karena scope Calendar baru ditambahkan, pemilik Apps Script perlu menjalankan sekali fungsi apa pun di editor untuk memicu layar izin, lalu redeploy.
+
+## Update v1.10.0
+- Undangan Meeting: default mengundang SEMUA PIC (menu PIC/Team) yang punya email. Kolom "Invite" pada task kini khusus untuk orang di luar menu PIC.
+- Jam mulai/selesai jadi dropdown kelipatan 15 menit (gaya Google Calendar).
+- Perbaikan keandalan penyimpanan: auto-refresh 20 detik kini ditunda saat ada modal terbuka, saat penyimpanan master data pending, dan selama 8 detik setelah editan terakhir — mencegah data editan tertimpa sebelum sempat tersimpan.
+
+## Update v1.11.0 — Perbaikan data master hilang (PENTING)
+Penyebab: master data (status, kategori, requester, email notifikasi finance, settings) sebelumnya disimpan lewat debounce 900ms yang bisa gagal menang balapan dengan auto-refresh, sehingga penyimpanan ke Sheet tidak terjadi dan data editan tertimpa data lama.
+Perbaikan: master data kini disimpan LANGSUNG saat tombol ditekan (Tambah/hapus chip, Simpan Workspace), mengirim nilai baru secara eksplisit. Tidak ada lagi debounce.
+Ini perubahan frontend saja (page.tsx) — cukup push ke GitHub/Vercel, tidak perlu redeploy Apps Script.
