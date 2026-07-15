@@ -1,223 +1,511 @@
-# Timeline Project Webapp v4 Password
+/**
+ * Timeline Project — Apps Script backend
+ * Fitur keamanan & performa:
+ * - Password di-hash (salted SHA-256 + iterasi), TIDAK pernah dikirim ke client.
+ * - Login diverifikasi di server (action=login). Plaintext lama otomatis di-upgrade ke hash saat login sukses.
+ * - Penyimpanan per-baris (upsertTask/deleteTask/upsertUser/deleteUser) — tidak menimpa seluruh sheet.
+ * - Shared token opsional (Script Property 'API_TOKEN') agar endpoint tidak bisa dipanggil sembarangan.
+ * - LockService untuk mencegah tulis bersamaan yang saling menimpa.
+ */
 
-Versi ini dipakai untuk pengembangan awal tanpa OAuth. Login memakai email + password dari tab `Users` di Google Sheet.
+const SHEETS = {
+  tasks: 'Tasks',
+  projects: 'Projects',
+  pics: 'PIC',
+  categories: 'Categories',
+  statuses: 'Statuses',
+  requesters: 'Requesters',
+  users: 'Users',
+  teams: 'Teams',
+  settings: 'Settings'
+};
 
-## Fitur
+const TASK_HEADERS = ['id','title','projectId','pic','startDate','endDate','startTime','endTime','status','category','notes','link','createdAt','updatedAt','statusMode','invite','meetLink','calendarEventId'];
+const PROJECT_HEADERS = ['id','name','color','status','startMonth','requester','pic','outputLandscape','outputVertical','distribusi','lokasi1','lokasi2','folderLink','budget','flag','thumbnail','notes','archived','description','actualCost'];
+const PIC_HEADERS = ['name','role','email','status','color','photo'];
+const LIST_HEADERS = ['name'];
+const USER_HEADERS = ['id','email','name','password','role','active','team'];
+const TEAM_HEADERS = ['id','name','description'];
+const SETTINGS_HEADERS = ['key','value'];
 
-- Next.js + Tailwind CSS
-- Google Sheet sebagai database
-- Login internal email + password dari sheet `Users`
-- Role access: Admin, Manager, Member, Viewer
-- Calendar Month, Week, Quarter, Timeline, Gantt
-- Kanban, Tasks, Projects, PIC/Team, Pengaturan
-- Multi-day task, drag & drop tanggal, workload PIC, deadline alert
-- Import/upload data Google Sheet via Apps Script
+const PBKDF_ITER = 1000; // naikkan untuk lebih kuat; login akan sedikit lebih lambat
 
-## Setup lokal
+// Token API bersama dengan Next.js (Vercel env: SHEET_API_TOKEN harus berisi nilai yang sama).
+// Ganti nilainya jika perlu. Script Property 'API_TOKEN' (jika diisi) lebih diprioritaskan daripada konstanta ini.
+// Kosongkan string ini ('') DAN Script Property untuk menonaktifkan pengecekan token (mode dev).
+const API_TOKEN = 'f30c2481a2e746fd7503bebbf463a358a9455b4230f2a1be';
 
-```bash
-npm install
-cp .env.example .env.local
-npm run dev
-```
+/* ================= ROUTING ================= */
 
-Isi `.env.local`:
+function doGet(e) {
+  try {
+    ensureSheets();
+    var token = e && e.parameter ? e.parameter.token : '';
+    if (!checkToken(token)) return jsonResponse({ success: false, message: 'Unauthorized: token salah.' });
+    return jsonResponse(readAll());
+  } catch (err) {
+    return jsonResponse({ success: false, message: String(err), stack: err && err.stack ? err.stack : '' });
+  }
+}
 
-```env
-GOOGLE_SHEET_WEB_APP_URL=https://script.google.com/macros/s/xxxxx/exec
-```
+function doPost(e) {
+  try {
+    ensureSheets();
+    var payload = JSON.parse(e && e.postData && e.postData.contents ? e.postData.contents : '{}');
+    if (!checkToken(payload.token)) return jsonResponse({ success: false, message: 'Unauthorized: token salah.' });
+    var action = payload.action;
+    switch (action) {
+      case 'login':
+        return jsonResponse(withLock(function () { return handleLogin(payload); }));
+      case 'upsertTask':
+        return jsonResponse(withLock(function () { return { success: true, task: upsertTask(payload.task || {}) }; }));
+      case 'renamePic':
+        return jsonResponse(withLock(function () { return { success: true, updated: renamePicInTasks(payload.from, payload.to) }; }));
+      case 'upsertProject':
+        return jsonResponse(withLock(function () { return { success: true, project: upsertRowById(SHEETS.projects, PROJECT_HEADERS, payload.project || {}) }; }));
+      case 'deleteProject':
+        return jsonResponse(withLock(function () { return { success: true, deleted: deleteRowById(SHEETS.projects, PROJECT_HEADERS, payload.id) }; }));
+      case 'deleteTask':
+        return jsonResponse(withLock(function () { return { success: true, deleted: deleteTaskWithEvent(payload.id) }; }));
+      case 'upsertUser':
+        return jsonResponse(withLock(function () { return { success: true, user: upsertUser(payload.user || {}, payload.newPassword) }; }));
+      case 'deleteUser':
+        return jsonResponse(withLock(function () { return { success: true, deleted: deleteRowById(SHEETS.users, USER_HEADERS, payload.id) }; }));
+      case 'writeMeta':
+        return jsonResponse(withLock(function () { writeMeta(payload); return { success: true }; }));
+      case 'writeAll': // kompatibilitas: sinkron penuh task + master data, TIDAK menyentuh password user
+        return jsonResponse(withLock(function () { writeAllSafe(payload); return { success: true, message: 'Sinkron penuh (task + master data) berhasil.' }; }));
+      default:
+        return jsonResponse({ success: false, message: 'Action tidak dikenal: ' + action });
+    }
+  } catch (err) {
+    return jsonResponse({ success: false, message: String(err), stack: err && err.stack ? err.stack : '' });
+  }
+}
 
-## Setup Google Sheet
+function test() {
+  ensureSheets();
+  Logger.log(JSON.stringify(readAll(), null, 2));
+}
 
-Upload file `timeline-project-google-sheet-v4-password.xlsx` ke Google Drive, lalu buka sebagai Google Sheet.
+/* ================= TOKEN & LOCK ================= */
 
-Tab utama:
+function checkToken(provided) {
+  var expected = PropertiesService.getScriptProperties().getProperty('API_TOKEN') || API_TOKEN || '';
+  if (!expected) return true; // token belum diset di mana pun (mode dev) -> izinkan.
+  return String(provided || '') === String(expected);
+}
 
-- `Tasks`
-- `Projects`
-- `PIC`
-- `Categories`
-- `Statuses`
-- `Users`
-- `Teams`
-- `Settings`
+function withLock(fn) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try { return fn(); } finally { lock.releaseLock(); }
+}
 
-## Struktur Users
+/* ================= PASSWORD ================= */
 
-| id | email | name | password | role | active | team |
-|---|---|---|---|---|---|---|
-| u-1 | branding@cpssoft.com | Accurate Branding | admin123 | Admin | TRUE | Multimedia |
+function bytesToHex(bytes) {
+  return bytes.map(function (b) { var v = (b < 0 ? b + 256 : b).toString(16); return v.length === 1 ? '0' + v : v; }).join('');
+}
+function hashPassword(password, salt, iterations) {
+  iterations = iterations || PBKDF_ITER;
+  var bytes = Utilities.newBlob(String(salt) + '|' + String(password)).getBytes();
+  for (var i = 0; i < iterations; i++) {
+    bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, bytes);
+  }
+  return bytesToHex(bytes);
+}
+function encodePassword(password) {
+  var salt = Utilities.getUuid().replace(/-/g, '');
+  return 'sha256$' + PBKDF_ITER + '$' + salt + '$' + hashPassword(password, salt, PBKDF_ITER);
+}
+function isHashed(stored) { return typeof stored === 'string' && stored.indexOf('sha256$') === 0; }
+function verifyPassword(password, stored) {
+  if (stored === '' || stored === null || stored === undefined) return false;
+  if (isHashed(stored)) {
+    var p = String(stored).split('$'); // [algo, iter, salt, hex]
+    var iter = parseInt(p[1], 10) || PBKDF_ITER;
+    return hashPassword(password, p[2], iter) === p[3];
+  }
+  return String(stored) === String(password); // legacy plaintext
+}
 
-Role:
+function handleLogin(payload) {
+  var email = String(payload.email || '').toLowerCase().trim();
+  var password = String(payload.password || '');
+  var row = findUserRowByEmail(email);
+  if (row < 0) return { success: false, message: 'Email belum terdaftar di tab Users.' };
+  var user = readRow(SHEETS.users, USER_HEADERS, row);
+  var active = String(user.active).toLowerCase() !== 'false' && String(user.active).toLowerCase() !== 'inactive' && user.active !== '';
+  if (!active) return { success: false, message: 'User non-aktif. Hubungi admin.' };
+  if (!verifyPassword(password, user.password)) return { success: false, message: 'Password salah.' };
+  if (!isHashed(user.password)) { // upgrade plaintext lama -> hash
+    var col = USER_HEADERS.indexOf('password') + 1;
+    getSheet(SHEETS.users).getRange(row, col).setValue(encodePassword(password));
+  }
+  return { success: true, user: publicUser(user) };
+}
 
-- `Admin`: semua akses, termasuk hapus task dan kelola user
-- `Manager`: tambah/edit task, upload ke sheet, kelola master data
-- `Member`: tambah/edit task
-- `Viewer`: hanya lihat dan export
+function publicUser(u) {
+  return {
+    id: u.id || '', email: String(u.email || '').toLowerCase(), name: u.name || u.email,
+    role: u.role || 'Viewer',
+    active: String(u.active).toLowerCase() !== 'false' && String(u.active).toLowerCase() !== 'inactive' && u.active !== '',
+    team: u.team || '', hasPassword: !!u.password
+  };
+}
 
-> Catatan: Untuk development awal, password masih disimpan sebagai plain text di Google Sheet. Jangan gunakan untuk data sensitif. Saat go-live, sebaiknya upgrade ke Google OAuth / NextAuth.
+/* ================= READ ================= */
 
-## Setup Apps Script
+function jsonResponse(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
+function getSheet(name) { return ss().getSheetByName(name) || ss().insertSheet(name); }
 
-1. Buka Google Sheet
-2. Extensions → Apps Script
-3. Replace isi `Code.gs` dengan file `Code.gs` dari folder project ini
-4. Run fungsi `test` sekali untuk authorization
-5. Deploy → New deployment → Web app
-6. Setting:
-   - Execute as: Me
-   - Who has access: Anyone
-7. Copy URL `/exec` ke `.env.local`
+function ensureSheets() {
+  setupSheet(SHEETS.tasks, TASK_HEADERS);
+  setupSheet(SHEETS.projects, PROJECT_HEADERS);
+  setupSheet(SHEETS.pics, PIC_HEADERS);
+  setupSheet(SHEETS.categories, LIST_HEADERS);
+  setupSheet(SHEETS.statuses, LIST_HEADERS);
+  setupSheet(SHEETS.requesters, LIST_HEADERS);
+  setupSheet(SHEETS.users, USER_HEADERS);
+  setupSheet(SHEETS.teams, TEAM_HEADERS);
+  setupSheet(SHEETS.settings, SETTINGS_HEADERS);
+}
 
-## Login Demo
+function setupSheet(name, headers) {
+  var sh = getSheet(name);
+  if (sh.getLastRow() === 0) sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+  var existing = sh.getRange(1, 1, 1, Math.max(headers.length, sh.getLastColumn())).getValues()[0];
+  var changed = false;
+  headers.forEach(function (h, i) { if (existing[i] !== h) changed = true; });
+  if (changed) sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+  sh.setFrozenRows(1);
+}
 
-- `admin@example.com` / `admin123`
-- `manager@example.com` / `manager123`
-- `member@example.com` / `member123`
-- `viewer@example.com` / `viewer123`
+function readAll() {
+  return {
+    success: true,
+    tasks: readObjects(SHEETS.tasks, TASK_HEADERS),
+    projects: readObjects(SHEETS.projects, PROJECT_HEADERS).filter(function (p) { return p.id && p.name; }),
+    pics: readObjects(SHEETS.pics, PIC_HEADERS).filter(function (p) { return p.name; }),
+    categories: readObjects(SHEETS.categories, LIST_HEADERS).map(function (x) { return x.name; }).filter(Boolean),
+    statuses: readObjects(SHEETS.statuses, LIST_HEADERS).map(function (x) { return x.name; }).filter(Boolean),
+    requesters: readObjects(SHEETS.requesters, LIST_HEADERS).map(function (x) { return x.name; }).filter(Boolean),
+    users: readObjects(SHEETS.users, USER_HEADERS).filter(function (u) { return u.email && u.name; }).map(publicUser), // tanpa password
+    teams: readObjects(SHEETS.teams, TEAM_HEADERS),
+    settings: readSettings()
+  };
+}
+
+function readObjects(sheetName, headers) {
+  var sh = getSheet(sheetName);
+  var last = sh.getLastRow();
+  if (last < 2) return [];
+  var values = sh.getRange(2, 1, last - 1, headers.length).getValues();
+  return values.filter(function (row) { return row.some(function (v) { return v !== ''; }); }).map(function (row) {
+    var obj = {};
+    headers.forEach(function (h, i) { obj[h] = formatValue(row[i]); });
+    return obj;
+  });
+}
+
+function readRow(sheetName, headers, row) {
+  var vals = getSheet(sheetName).getRange(row, 1, 1, headers.length).getValues()[0];
+  var obj = {};
+  headers.forEach(function (h, i) { obj[h] = formatValue(vals[i]); });
+  return obj;
+}
+
+function formatValue(v) {
+  if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  return v === null || v === undefined ? '' : v;
+}
+
+function readSettings() {
+  var rows = readObjects(SHEETS.settings, SETTINGS_HEADERS);
+  var obj = {};
+  rows.forEach(function (r) { if (r.key) obj[r.key] = r.value; });
+  return obj;
+}
+
+/* ================= PER-ROW WRITE ================= */
+
+function findRowById(sheetName, headers, id) {
+  var sh = getSheet(sheetName);
+  var last = sh.getLastRow();
+  if (last < 2) return -1;
+  var idCol = headers.indexOf('id') + 1;
+  var ids = sh.getRange(2, idCol, last - 1, 1).getValues();
+  for (var i = 0; i < ids.length; i++) { if (String(ids[i][0]) === String(id)) return i + 2; }
+  return -1;
+}
+
+function findUserRowByEmail(email) {
+  var sh = getSheet(SHEETS.users);
+  var last = sh.getLastRow();
+  if (last < 2) return -1;
+  var emailCol = USER_HEADERS.indexOf('email') + 1;
+  var emails = sh.getRange(2, emailCol, last - 1, 1).getValues();
+  for (var i = 0; i < emails.length; i++) { if (String(emails[i][0]).toLowerCase() === String(email).toLowerCase()) return i + 2; }
+  return -1;
+}
+
+function rowValues(headers, obj) {
+  return headers.map(function (h) { return obj[h] === undefined || obj[h] === null ? '' : obj[h]; });
+}
+
+// Ganti nama PIC di seluruh task sekaligus (dipakai saat PIC direname).
+function renamePicInTasks(from, to) {
+  if (!from || !to || from === to) return 0;
+  var sh = getSheet(SHEETS.tasks);
+  var last = sh.getLastRow();
+  if (last < 2) return 0;
+  var col = TASK_HEADERS.indexOf('pic') + 1;
+  var range = sh.getRange(2, col, last - 1, 1);
+  var vals = range.getValues();
+  var n = 0;
+  for (var i = 0; i < vals.length; i++) { if (String(vals[i][0]) === String(from)) { vals[i][0] = to; n++; } }
+  if (n) range.setValues(vals);
+  return n;
+}
+
+function upsertRowById(sheetName, headers, obj) {
+  var sh = getSheet(sheetName);
+  var row = obj.id ? findRowById(sheetName, headers, obj.id) : -1;
+  var values = rowValues(headers, obj);
+  if (row > 0) sh.getRange(row, 1, 1, headers.length).setValues([values]);
+  else sh.appendRow(values);
+  return obj;
+}
+
+function upsertTask(task) {
+  var sh = getSheet(SHEETS.tasks);
+  var row = task.id ? findRowById(SHEETS.tasks, TASK_HEADERS, task.id) : -1;
+  var existing = row > 0 ? readRow(SHEETS.tasks, TASK_HEADERS, row) : null;
+  // Integrasi Google Calendar untuk task kategori "Meeting" (best-effort; kegagalan tidak menggagalkan simpan task).
+  try {
+    var isMeeting = String(task.category || '').toLowerCase() === 'meeting';
+    var prevEventId = existing ? existing.calendarEventId : '';
+    if (isMeeting && (task.startDate)) {
+      var r = syncMeetingEvent(task, prevEventId);
+      task.calendarEventId = r.eventId;
+      task.meetLink = r.meetLink;
+    } else if (prevEventId) {
+      deleteCalendarEvent(prevEventId);
+      task.calendarEventId = '';
+      task.meetLink = '';
+    }
+  } catch (eCal) { task._calendarWarning = String(eCal); }
+  var values = rowValues(TASK_HEADERS, task);
+  if (row > 0) sh.getRange(row, 1, 1, TASK_HEADERS.length).setValues([values]);
+  else sh.appendRow(values);
+  return task;
+}
+
+function deleteTaskWithEvent(id) {
+  var row = findRowById(SHEETS.tasks, TASK_HEADERS, id);
+  if (row < 0) return false;
+  var t = readRow(SHEETS.tasks, TASK_HEADERS, row);
+  if (t.calendarEventId) { try { deleteCalendarEvent(t.calendarEventId); } catch (e) {} }
+  getSheet(SHEETS.tasks).deleteRow(row);
+  return true;
+}
+
+/* ===== Google Calendar (kalender khusus "Timeline Meetings") ===== */
+function getMeetingsCalendar() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('MEETINGS_CALENDAR_ID');
+  if (id) { var c = CalendarApp.getCalendarById(id); if (c) return c; }
+  var existing = CalendarApp.getCalendarsByName('Timeline Meetings');
+  var cal = (existing && existing.length) ? existing[0] : CalendarApp.createCalendar('Timeline Meetings');
+  props.setProperty('MEETINGS_CALENDAR_ID', cal.getId());
+  return cal;
+}
+function resolveEmail(name) {
+  if (!name) return '';
+  var users = readObjects(SHEETS.users, USER_HEADERS);
+  for (var i = 0; i < users.length; i++) { if (String(users[i].name).toLowerCase() === String(name).toLowerCase() && users[i].email) return String(users[i].email); }
+  var pics = readObjects(SHEETS.pics, PIC_HEADERS);
+  for (var j = 0; j < pics.length; j++) { if (String(pics[j].name).toLowerCase() === String(name).toLowerCase() && pics[j].email) return String(pics[j].email); }
+  return '';
+}
+function buildEventTimes(task) {
+  var sd = String(task.startDate || ''); if (!sd) return null;
+  var ed = String(task.endDate || task.startDate || '');
+  function mk(dateStr, timeStr, defH, defM) { var p = dateStr.split('-'); var h = defH, m = defM; if (timeStr && String(timeStr).indexOf(':') >= 0) { var t = String(timeStr).split(':'); h = parseInt(t[0], 10); m = parseInt(t[1], 10); } return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]), h, m, 0); }
+  var st = String(task.startTime || ''), et = String(task.endTime || '');
+  var start = mk(sd, st, 10, 0);
+  var end;
+  if (et) end = mk(ed, et, 11, 0);
+  else if (st) end = new Date(start.getTime() + 3600000);
+  else end = mk(ed, '', 11, 0);
+  if (end <= start) end = new Date(start.getTime() + 3600000);
+  return { start: start, end: end };
+}
+function collectGuests(task) {
+  var set = {};
+  // Default: undang SEMUA PIC di menu PIC/Team yang punya email (atau bisa di-resolve dari Users).
+  var pics = readObjects(SHEETS.pics, PIC_HEADERS);
+  pics.forEach(function (p) { var e = p.email ? String(p.email).trim() : (p.name ? resolveEmail(p.name) : ''); if (e && e.indexOf('@') > 0) set[e.toLowerCase()] = true; });
+  // Kolom "Invite" pada task: untuk orang DI LUAR menu PIC.
+  String(task.invite || '').split(/[,;\s]+/).forEach(function (e) { e = String(e).trim(); if (e.indexOf('@') > 0) set[e.toLowerCase()] = true; });
+  // Jangan undang akun pemilik Apps Script (pemilik kalender "Timeline Meetings"): event sudah tampil di
+  // kalender tersebut, jadi mengundangnya sebagai tamu hanya membuat salinan dobel di kalender utamanya.
+  try { var owner = Session.getEffectiveUser().getEmail(); if (owner) delete set[owner.toLowerCase()]; } catch (eOwner) {}
+  return Object.keys(set);
+}
+function syncMeetingEvent(task, existingEventId) {
+  var times = buildEventTimes(task);
+  if (!times) return { eventId: existingEventId || '', meetLink: task.meetLink || '' };
+  var cal = getMeetingsCalendar();
+  var calId = cal.getId();
+  var guests = collectGuests(task);
+  var desc = 'Task Timeline: ' + (task.title || '') + (task.notes ? ('\n\n' + task.notes) : '');
+  var advancedOk = (typeof Calendar !== 'undefined' && Calendar.Events);
+  if (advancedOk) {
+    try {
+      var resource = {
+        summary: task.title || 'Meeting', description: desc,
+        start: { dateTime: times.start.toISOString() }, end: { dateTime: times.end.toISOString() },
+        attendees: guests.map(function (e) { return { email: e }; }),
+        conferenceData: { createRequest: { requestId: 'tl-' + (task.id || Utilities.getUuid()), conferenceSolutionKey: { type: 'hangoutsMeet' } } }
+      };
+      var res;
+      if (existingEventId) { try { res = Calendar.Events.patch(resource, calId, existingEventId, { conferenceDataVersion: 1, sendUpdates: 'all' }); } catch (e0) { res = Calendar.Events.insert(resource, calId, { conferenceDataVersion: 1, sendUpdates: 'all' }); } }
+      else { res = Calendar.Events.insert(resource, calId, { conferenceDataVersion: 1, sendUpdates: 'all' }); }
+      var link = res.hangoutLink || (res.conferenceData && res.conferenceData.entryPoints && res.conferenceData.entryPoints[0] ? res.conferenceData.entryPoints[0].uri : '');
+      return { eventId: res.id, meetLink: link || '' };
+    } catch (eAdv) { /* fallback ke CalendarApp */ }
+  }
+  var ev = null;
+  if (existingEventId) { try { ev = cal.getEventById(existingEventId); } catch (e1) { ev = null; } }
+  if (ev) {
+    ev.setTitle(task.title || 'Meeting'); ev.setTime(times.start, times.end); ev.setDescription(desc);
+    var current = {}; ev.getGuestList().forEach(function (g) { current[g.getEmail().toLowerCase()] = true; });
+    guests.forEach(function (e) { if (!current[e.toLowerCase()]) { try { ev.addGuest(e); } catch (e2) {} } });
+    return { eventId: existingEventId, meetLink: task.meetLink || '' };
+  }
+  var newEv = cal.createEvent(task.title || 'Meeting', times.start, times.end, { description: desc, guests: guests.join(','), sendInvites: true });
+  return { eventId: newEv.getId(), meetLink: '' };
+}
+function deleteCalendarEvent(eventId) {
+  if (!eventId) return;
+  var cal = getMeetingsCalendar();
+  var advancedOk = (typeof Calendar !== 'undefined' && Calendar.Events);
+  if (advancedOk) { try { Calendar.Events.remove(cal.getId(), eventId, { sendUpdates: 'all' }); return; } catch (e) {} }
+  try { var ev = cal.getEventById(eventId); if (ev) ev.deleteEvent(); } catch (e2) {}
+}
+
+function deleteRowById(sheetName, headers, id) {
+  var row = findRowById(sheetName, headers, id);
+  if (row > 0) { getSheet(sheetName).deleteRow(row); return true; }
+  return false;
+}
+
+function upsertUser(u, newPassword) {
+  var sh = getSheet(SHEETS.users);
+  var id = u.id || ('user-' + Utilities.getUuid());
+  var row = findRowById(SHEETS.users, USER_HEADERS, id);
+  var existing = row > 0 ? readRow(SHEETS.users, USER_HEADERS, row) : null;
+  var passwordField;
+  if (newPassword) passwordField = encodePassword(String(newPassword));
+  else if (existing) passwordField = existing.password; // preserve hash
+  else passwordField = '';
+  var obj = {
+    id: id, email: String(u.email || '').toLowerCase(), name: u.name || u.email,
+    password: passwordField, role: u.role || 'Viewer',
+    active: u.active === false ? false : true, team: u.team || ''
+  };
+  var values = rowValues(USER_HEADERS, obj);
+  if (row > 0) sh.getRange(row, 1, 1, USER_HEADERS.length).setValues([values]);
+  else sh.appendRow(values);
+  return publicUser(obj);
+}
+
+function writeMeta(payload) {
+  if (payload.projects) writeObjects(SHEETS.projects, PROJECT_HEADERS, payload.projects);
+  if (payload.pics) writeObjects(SHEETS.pics, PIC_HEADERS, payload.pics.map(function (p) { return typeof p === 'string' ? { name: p, role: '', email: '', status: 'Active', color: '', photo: '' } : p; }));
+  if (payload.categories) writeObjects(SHEETS.categories, LIST_HEADERS, payload.categories.map(function (name) { return typeof name === 'string' ? { name: name } : name; }));
+  if (payload.statuses) writeObjects(SHEETS.statuses, LIST_HEADERS, payload.statuses.map(function (name) { return typeof name === 'string' ? { name: name } : name; }));
+  if (payload.requesters) writeObjects(SHEETS.requesters, LIST_HEADERS, payload.requesters.map(function (name) { return typeof name === 'string' ? { name: name } : name; }));
+  if (payload.teams) writeObjects(SHEETS.teams, TEAM_HEADERS, payload.teams);
+  if (payload.settings) writeSettings(payload.settings);
+}
+
+// Sinkron penuh yang aman: menulis tasks + master data, TIDAK menyentuh tab Users (password aman).
+function writeAllSafe(payload) {
+  if (payload.tasks) writeObjects(SHEETS.tasks, TASK_HEADERS, payload.tasks);
+  writeMeta(payload);
+}
+
+function writeObjects(sheetName, headers, rows) {
+  var sh = getSheet(sheetName);
+  sh.clearContents();
+  sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+  if (rows.length) {
+    var values = rows.map(function (obj) { return rowValues(headers, obj); });
+    sh.getRange(2, 1, values.length, headers.length).setValues(values);
+  }
+  sh.setFrozenRows(1);
+  sh.autoResizeColumns(1, headers.length);
+}
+
+function writeSettings(settings) {
+  var rows = Object.keys(settings).map(function (key) { return { key: key, value: settings[key] }; });
+  writeObjects(SHEETS.settings, SETTINGS_HEADERS, rows);
+}
 
 
-## Auto Save
-
-Versi ini menyimpan perubahan otomatis ke Google Sheet setelah tambah, edit, hapus, drag/drop task, atau perubahan master data. Tombol **Simpan Manual** tetap tersedia sebagai fallback. Tombol **Refresh dari Google Sheet** digunakan untuk mengambil data terbaru dari Sheet.
-
-Catatan role: Admin, Manager, dan Member dapat memicu auto save. Viewer hanya dapat melihat data.
-
-## Auto Refresh Multi-user
-
-Versi ini juga melakukan auto refresh setiap 15 detik untuk mengambil perubahan terbaru dari Google Sheet. Jadi jika User A menambahkan/edit task, User B akan menerima data terbaru tanpa perlu menekan tombol apa pun.
-
-Catatan teknis:
-- Mekanisme ini memakai polling ke endpoint `/api/data` setiap 15 detik.
-- Jika user sedang punya perubahan lokal yang belum tersimpan, auto refresh akan ditunda supaya data lokal tidak tertimpa.
-- Google Sheet/Apps Script tidak mendukung realtime push seperti WebSocket, jadi polling adalah opsi paling aman dan sederhana untuk fase v4.
-
-## Update v4.1 - Auto Load Users
-
-Pada versi ini halaman login tidak lagi membutuhkan tombol Import Users.
-Saat aplikasi pertama dibuka, webapp otomatis melakukan bootstrap data dari Google Sheet:
-
-- Users
-- Tasks
-- Projects
-- PIC
-- Categories
-- Status
-- Settings
-
-Flow baru:
-
-1. Buka webapp.
-2. Muncul loading workspace sebentar.
-3. Data Users otomatis dimuat dari Google Sheet.
-4. User langsung bisa login dengan email + password.
-
-Tombol **Import Users & Data dari Google Sheet** di halaman login sudah dihapus.
-Tombol **Refresh dari Google Sheet** tetap tersedia setelah login untuk refresh manual jika dibutuhkan.
-
-## Update: Keamanan Password & Penyimpanan Per-Baris (v1.2.0)
-
-### Keamanan password
-- Password kini di-**hash** (salted SHA-256 + iterasi) di Apps Script dan **tidak pernah dikirim ke browser**. Endpoint `read` hanya mengembalikan `hasPassword: true/false`.
-- **Login diverifikasi di server** lewat `action=login`. Password lama yang masih plaintext di sheet akan **otomatis di-upgrade ke hash** saat login pertama yang berhasil (tidak perlu migrasi manual).
-- Tambahkan **shared token** agar Web App tidak bisa dipanggil sembarang orang:
-  1. Di project Apps Script: **Project Settings → Script Properties → Add** → key `API_TOKEN`, value = string acak.
-  2. Di `.env.local` Next.js: `SHEET_API_TOKEN=` diisi nilai yang sama.
-  - Jika `API_TOKEN` belum diset, endpoint tetap jalan (mode dev). Set untuk produksi.
-
-### Penyimpanan per-baris (bukan overwrite total)
-- Perubahan task memakai `upsertTask` / `deleteTask` (hanya baris terkait), memakai `LockService` untuk mencegah tulis bersamaan yang saling menimpa.
-- User dikelola per-baris via `upsertUser` / `deleteUser`. Mengubah role/nama/aktif **tidak** menghapus hash password (password hanya berubah bila field password diisi).
-- Master data (projects/PIC/kategori/status/settings) disimpan via `writeMeta` (debounce), tidak menyentuh Tasks maupun Users.
-- Tombol **Sinkron Penuh** memakai `writeAll` yang kini aman: menulis ulang Tasks + master data, **tanpa menyentuh tab Users**.
-
-### Langkah deploy Apps Script
-1. Paste `Code.gs` baru.
-2. Jalankan sekali `ensureSheets` (atau `test`) untuk memastikan header terbaru (kolom `statusMode` di Tasks).
-3. Set Script Property `API_TOKEN` (disarankan).
-4. **Deploy → Manage deployments → Edit → New version**.
-
-## Update: Rename PIC, Chip Timeline, Reminder Finance (v1.3.0)
-
-- **Rename PIC** dari menu PIC / Team otomatis memperbarui seluruh task milik PIC tersebut (bulk update satu kolom di sheet, aksi `renamePic`).
-- **Chip di card Timeline**: chip "Attachment" (klik membuka link) muncul jika task punya link; chip "Finance" muncul untuk task berkategori Finance.
-- **Reminder email task Finance (H-3, H-2, H-1, Hari-H)**:
-  1. Tambahkan kategori `Finance` di Pengaturan (jika belum ada).
-  2. Isi **Email Notifikasi Finance** di Pengaturan (boleh lebih dari satu, pisahkan koma).
-  3. Di Apps Script: **Triggers (ikon jam) → Add Trigger** → function `sendFinanceReminders` → Time-driven → Day timer → pilih jam (mis. 7–8 pagi).
-  - Setiap hari, task Finance yang deadline-nya 0–3 hari lagi (belum Done/Canceled) dikirim sebagai satu email rekap, dikelompokkan H-3 / H-2 / H-1 / Hari-H. Pengirim adalah akun Google pemilik Apps Script (kuota MailApp harian berlaku).
-
-## Update v1.4.0
-- Perbaikan skala 80%: pindah dari `zoom` ke root font-size (rem) — sidebar tidak lagi terpotong.
-- Card PIC didesain ulang: 5 kolom, foto penuh dengan gradient, nama lebih besar, chip role berwarna.
-- Drawer Detail Task menutup otomatis saat pindah ke Projects/PIC/Pengaturan, klik di luar drawer, atau tekan Escape.
-- Lonceng notifikasi di header: task Finance (H-3 s/d Hari-H) + semua task yang berjalan hari ini. Badge merah untuk yang belum dibaca; bunyi "ting-nong" berulang tiap 30 menit selama belum dibuka. Suara bisa dimatikan di Pengaturan (checkbox di kartu Workspace).
-- Kartu Workspace di Pengaturan kini terkunci; ubah lewat tombol Edit → Simpan/Batal.
-
-## Update v1.6.0 — Dashboard lanjutan
-- Kolom baru Projects: `actualCost` (Realisasi Biaya). Deploy Code.gs → jalankan `ensureSheets` sekali → New Version.
-- Dashboard tambah: On-Time Delivery rate, Budget vs Realisasi, Rata-rata Durasi Task per Kategori, dan tombol Export PDF (via window.print, hanya area dashboard).
-- Scrollbar horizontal Quarter & Kanban dipindah ke atas.
-- On-time delivery memakai `updatedAt` sebagai proxy tanggal selesai (task Done dianggap tepat waktu bila terakhir diubah <= deadline).
-
-## Update v1.7.0 — Asisten AI (Gemini) di panel kanan
-- Kolom kanan yang tadinya kosong kini berisi **Asisten Timeline**: chat AI yang menjawab seputar data aplikasi (project, task, budget, realisasi, PIC, output, progress). Membuka Detail Task akan meng-overlay panel ini.
-- Riwayat percakapan disimpan lokal per user (localStorage); tombol hapus untuk mengosongkan.
-- Data dikirim ke Google Gemini API lewat route server `/api/chat` (API key tidak pernah sampai ke browser).
-
-### Aktivasi
-1. Ambil API key gratis di https://aistudio.google.com/apikey
-2. Di Vercel → Environment Variables → tambah `GEMINI_API_KEY` = key tsb (Production & Preview). Opsional `GEMINI_MODEL` (default `gemini-2.0-flash`).
-3. Redeploy.
-
-Catatan privasi: ringkasan data project/task/budget dikirim ke Gemini saat user bertanya. Pastikan sesuai kebijakan data perusahaan. Jika `GEMINI_API_KEY` belum diset, panel tetap tampil tapi memberi pesan bahwa fitur belum aktif.
-
-
-## Update v1.8.0 — Asisten AI fleksibel (default Groq, tanpa kartu)
-Route `/api/chat` kini generik (format OpenAI-compatible), bisa pindah provider lewat env tanpa ubah kode.
-
-Default: **Groq** — gratis, tanpa kartu kredit (~1.000 request/hari).
-1. Buat API key di https://console.groq.com/keys (mulai `gsk_`).
-2. Di Vercel → Environment Variables:
-   - `AI_PROVIDER` = `groq`
-   - `AI_API_KEY` = key Groq
-   - (opsional) `AI_MODEL` = kosongkan untuk default `llama-3.3-70b-versatile`. Jika model dinonaktifkan Groq, coba `openai/gpt-oss-20b` atau `llama-3.1-8b-instant`.
-3. Redeploy.
-
-Pindah provider kapan saja tanpa ubah kode: set `AI_PROVIDER` ke `openai` / `openrouter` / `gemini` dan isi `AI_API_KEY` yang sesuai (base URL & model default otomatis mengikuti; bisa dioverride via `AI_BASE_URL` / `AI_MODEL`). Variabel `GEMINI_API_KEY` lama tetap dikenali sebagai fallback bila `AI_PROVIDER=gemini`.
-
-## Update v1.9.0 — Integrasi Google Calendar (task kategori "Meeting")
-Task berkategori "Meeting" otomatis dibuatkan event di kalender khusus **"Timeline Meetings"** (dibuat sekali otomatis).
-- Judul = judul task, tanggal/jam = data task (bila jam kosong: default 10:00, durasi 1 jam).
-- Undangan = email PIC (dari data PIC/User) + field "Invite" manual per task. Tamu menerima email undangan.
-- Edit task → event ikut diperbarui; hapus task → event ikut terhapus.
-- Link Google Meet: dibuat otomatis **bila** Advanced Calendar Service aktif; jika tidak, event tetap dibuat tanpa Meet.
-
-### Setup (tanpa Google Cloud Console)
-1. Paste `Code.gs` baru → jalankan `ensureSheets` sekali (menambah kolom `invite`, `meetLink`, `calendarEventId` di Tasks). Saat dijalankan pertama, Google akan meminta izin akses **Calendar** — setujui.
-2. **New Version** deployment.
-3. (Opsional, untuk link Meet otomatis) Di editor Apps Script: **Services (+) → Google Calendar API → Add**. Ini toggle di editor, bukan Cloud Console. Bila diblokir admin Workspace, lewati saja — event tetap jalan tanpa Meet.
-4. Isi email PIC di menu PIC / Team agar bisa diundang.
-
-Catatan: karena scope Calendar baru ditambahkan, pemilik Apps Script perlu menjalankan sekali fungsi apa pun di editor untuk memicu layar izin, lalu redeploy.
-
-## Update v1.10.0
-- Undangan Meeting: default mengundang SEMUA PIC (menu PIC/Team) yang punya email. Kolom "Invite" pada task kini khusus untuk orang di luar menu PIC.
-- Jam mulai/selesai jadi dropdown kelipatan 15 menit (gaya Google Calendar).
-- Perbaikan keandalan penyimpanan: auto-refresh 20 detik kini ditunda saat ada modal terbuka, saat penyimpanan master data pending, dan selama 8 detik setelah editan terakhir — mencegah data editan tertimpa sebelum sempat tersimpan.
-
-## Update v1.11.0 — Perbaikan data master hilang (PENTING)
-Penyebab: master data (status, kategori, requester, email notifikasi finance, settings) sebelumnya disimpan lewat debounce 900ms yang bisa gagal menang balapan dengan auto-refresh, sehingga penyimpanan ke Sheet tidak terjadi dan data editan tertimpa data lama.
-Perbaikan: master data kini disimpan LANGSUNG saat tombol ditekan (Tambah/hapus chip, Simpan Workspace), mengirim nilai baru secara eksplisit. Tidak ada lagi debounce.
-Ini perubahan frontend saja (page.tsx) — cukup push ke GitHub/Vercel, tidak perlu redeploy Apps Script.
-
-## Update v1.12.0 — Perbaikan item terhapus "muncul lagi"
-Penyebab: auto-refresh bisa membaca data server tepat sebelum penghapusan terkonfirmasi, lalu menimpa balik data lokal sehingga item yang dihapus muncul kembali.
-Perbaikan:
-- Auto-refresh kini ditahan selama ada permintaan tulis yang belum selesai (penghitung in-flight), bukan lagi mengandalkan jeda waktu tetap.
-- "Tombstone": task/PIC/user/project yang baru dihapus disaring dari data server sampai server benar-benar mengkonfirmasi item itu hilang — mencegah kemunculan kembali akibat data server yang sempat basi.
-Perubahan frontend saja (page.tsx). Cukup push ke Vercel.
-
-## Update v1.13.0
-- Google Calendar: akun pemilik Apps Script tidak lagi diundang sebagai tamu ke event Meeting, sehingga event tidak muncul dobel (satu di kalender "Timeline Meetings", satu tersalin ke kalender utama pemilik). Perlu redeploy Code.gs (New Version).
-- Tombol login menampilkan animasi loading (spinner + "Memverifikasi…") dan nonaktif sementara selama proses login.
+/* ================= NOTIFIKASI FINANCE (H-3 s/d Hari-H) =================
+ * Cara aktifkan:
+ * 1) Isi "Email Notifikasi Finance" di halaman Pengaturan aplikasi (atau tab Settings,
+ *    key: financeNotifEmails, value: email dipisah koma).
+ * 2) Di Apps Script: Triggers (ikon jam) -> Add Trigger -> function: sendFinanceReminders,
+ *    event source: Time-driven -> Day timer -> pilih jam (mis. 7-8 pagi).
+ * Setiap hari, task kategori "Finance" yang deadline-nya hari ini s/d 3 hari lagi
+ * (dan belum Done/Canceled) akan dikirim sebagai satu email rekap: H-3, H-2, H-1, Hari-H.
+ */
+function sendFinanceReminders() {
+  ensureSheets();
+  var settings = readSettings();
+  var recipients = String(settings.financeNotifEmails || '').trim();
+  if (!recipients) return;
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  var tasks = readObjects(SHEETS.tasks, TASK_HEADERS);
+  var buckets = { 0: [], 1: [], 2: [], 3: [] };
+  tasks.forEach(function (t) {
+    if (String(t.category || '').toLowerCase() !== 'finance') return;
+    var st = String(t.status || '');
+    if (st === 'Done' || st === 'Canceled') return;
+    var dueStr = String(t.endDate || t.startDate || '');
+    if (!dueStr) return;
+    var p = dueStr.split('-');
+    var due = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+    due.setHours(0, 0, 0, 0);
+    var diff = Math.round((due.getTime() - today.getTime()) / 86400000);
+    if (diff >= 0 && diff <= 3) buckets[diff].push(t);
+  });
+  var total = buckets[0].length + buckets[1].length + buckets[2].length + buckets[3].length;
+  if (!total) return;
+  var labels = { 0: 'HARI INI (Hari-H)', 1: 'H-1 (besok)', 2: 'H-2', 3: 'H-3' };
+  var html = '<h2 style="margin:0 0 12px">Reminder Task Finance</h2>';
+  var plain = 'Reminder Task Finance\n\n';
+  [0, 1, 2, 3].forEach(function (d) {
+    if (!buckets[d].length) return;
+    html += '<h3 style="margin:16px 0 6px;color:' + (d === 0 ? '#b91c1c' : '#b45309') + '">' + labels[d] + '</h3><ul style="margin:0;padding-left:18px">';
+    plain += labels[d] + ':\n';
+    buckets[d].forEach(function (t) {
+      var due = t.endDate || t.startDate;
+      var line = t.title + ' — deadline ' + due + (t.pic ? ' — PIC: ' + t.pic : '');
+      html += '<li style="margin:3px 0">' + line + (t.link ? ' — <a href="' + t.link + '">link</a>' : '') + '</li>';
+      plain += '- ' + line + '\n';
+    });
+    html += '</ul>';
+    plain += '\n';
+  });
+  var subject = '[Timeline] ' + total + ' task Finance mendekati deadline';
+  MailApp.sendEmail({ to: recipients, subject: subject, body: plain, htmlBody: html });
+}
