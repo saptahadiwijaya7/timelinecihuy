@@ -49,6 +49,7 @@ export type Task = {
   invite?: string;
   meetLink?: string;
   calendarEventId?: string;
+  email_pic?: string;
   notes?: string;
   link?: string;
   createdAt?: string;

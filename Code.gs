@@ -20,7 +20,7 @@ const SHEETS = {
   settings: 'Settings'
 };
 
-const TASK_HEADERS = ['id','title','projectId','pic','startDate','endDate','startTime','endTime','status','category','notes','link','createdAt','updatedAt','statusMode','invite','meetLink','calendarEventId'];
+const TASK_HEADERS = ['id','title','projectId','pic','startDate','endDate','startTime','endTime','status','category','notes','link','createdAt','updatedAt','statusMode','invite','meetLink','calendarEventId','email_pic'];
 const PROJECT_HEADERS = ['id','name','color','status','startMonth','requester','pic','outputLandscape','outputVertical','distribusi','lokasi1','lokasi2','folderLink','budget','flag','thumbnail','notes','archived','description','actualCost'];
 const PIC_HEADERS = ['name','role','email','status','color','photo'];
 const LIST_HEADERS = ['name'];
@@ -285,6 +285,13 @@ function upsertTask(task) {
   var sh = getSheet(SHEETS.tasks);
   var row = task.id ? findRowById(SHEETS.tasks, TASK_HEADERS, task.id) : -1;
   var existing = row > 0 ? readRow(SHEETS.tasks, TASK_HEADERS, row) : null;
+  // email_pic: otomatis dari daftar PIC (dipisah koma) -> email, untuk sinkronisasi ke Beranda Cihuy.
+  try {
+    var names = String(task.pic || '').split(',');
+    var emails = [];
+    for (var ni = 0; ni < names.length; ni++) { var em = resolveEmail(names[ni].replace(/^\s+|\s+$/g, '')); if (em && emails.indexOf(em) < 0) emails.push(em); }
+    task.email_pic = emails.join(', ');
+  } catch (ePic) {}
   // Integrasi Google Calendar untuk task kategori "Meeting" (best-effort; kegagalan tidak menggagalkan simpan task).
   try {
     var isMeeting = String(task.category || '').toLowerCase() === 'meeting';
@@ -299,6 +306,8 @@ function upsertTask(task) {
       task.meetLink = '';
     }
   } catch (eCal) { task._calendarWarning = String(eCal); }
+  // email_pic: email semua PIC terpilih (untuk sinkron ke aplikasi lain), dibuat otomatis saat simpan.
+  task.email_pic = resolvePicEmails(task.pic);
   var values = rowValues(TASK_HEADERS, task);
   if (row > 0) sh.getRange(row, 1, 1, TASK_HEADERS.length).setValues([values]);
   else sh.appendRow(values);
@@ -331,6 +340,12 @@ function resolveEmail(name) {
   var pics = readObjects(SHEETS.pics, PIC_HEADERS);
   for (var j = 0; j < pics.length; j++) { if (String(pics[j].name).toLowerCase() === String(name).toLowerCase() && pics[j].email) return String(pics[j].email); }
   return '';
+}
+function resolvePicEmails(picStr) {
+  var names = String(picStr || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  var emails = [];
+  names.forEach(function (n) { var e = resolveEmail(n); if (e && emails.indexOf(e) < 0) emails.push(e); });
+  return emails.join(', ');
 }
 function buildEventTimes(task) {
   var sd = String(task.startDate || ''); if (!sd) return null;

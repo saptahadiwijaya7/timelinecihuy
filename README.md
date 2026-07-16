@@ -247,3 +247,11 @@ Aplikasi kini bisa dipasang ke homescreen HP (Android/iOS) sebagai PWA.
 Syarat sudah terpenuhi otomatis: HTTPS (Vercel) + manifest + service worker.
 
 Catatan: PWA aktif setelah kunjungan pertama pasca-deploy (service worker terdaftar saat load). Lakukan hard reload sekali setelah deploy.
+
+## Update v1.18.0 — Multi-PIC & kolom email_pic
+- Task kini bisa punya lebih dari satu PIC. Field PIC tetap tampil seperti dropdown, tapi saat dibuka menampilkan daftar nama PIC dengan checkbox untuk memilih beberapa sekaligus (disimpan sebagai daftar dipisah koma). Filter, dashboard workload, PIC/Team, dan rename PIC sudah menyesuaikan (cocok bila salah satu PIC pada task sama).
+- Kolom baru `email_pic` di sheet Tasks: otomatis terisi email semua PIC terpilih saat task disimpan (di-resolve dari email PIC/User), untuk sinkronisasi ke aplikasi lain (mis. beranda cihuy).
+- SCHEMA berubah → paste Code.gs baru, jalankan `ensureSheets` sekali (menambah kolom email_pic), lalu New Version. Isi email tiap PIC di menu PIC / Team agar email_pic terisi.
+
+## Update v1.19.0 — Fix drawer Detail Task saat scroll
+Drawer Detail Task di desktop kini menempel (sticky) ke viewport seperti panel asisten, jadi tidak lagi "tertinggal" di atas saat daftar (mis. Timeline panjang) di-scroll ke bawah. Isi drawer diberi ruang bawah agar tidak tertutup tombol Edit/Hapus. Frontend saja.
