@@ -258,3 +258,6 @@ Drawer Detail Task di desktop kini menempel (sticky) ke viewport seperti panel a
 
 ## Update v1.20.0 — Popover "lihat semua" event kalender
 Di tampilan Bulan, hari dengan event lebih banyak dari yang muat kini menampilkan "+N lagi" yang bisa diklik → muncul popover berisi SEMUA event hari itu (bisa di-scroll, tiap event diklik untuk buka detail). Popover dirender via portal + posisi pintar (buka ke atas bila sel di bagian bawah layar) sehingga tidak terpotong. Frontend saja.
+
+## Update v1.21.0 — Loading screen fun
+Layar loading awal diganti: maskot Ailinu (mengambang, berkedip, melambai) + pesan lucu yang berganti-ganti ("Menyiapkan ruang kerjamu…", "Menyeduh kopi dulu…", dst) + titik memantul. Tidak lagi menyebut detail backend (Google Sheet/users). Bila load gagal, pesan error tetap ditampilkan. Frontend saja.

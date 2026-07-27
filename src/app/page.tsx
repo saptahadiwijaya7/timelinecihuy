@@ -532,7 +532,7 @@ export default function Home() {
   }
   function logout() { window.localStorage.removeItem(USER_KEY); setCurrentEmail(null); setLoginEmail(''); setLoginPassword(''); }
 
-  if (isBootstrapping) return <main className="grid min-h-screen place-items-center bg-slate-50 p-6"><section className="w-full max-w-md rounded-3xl border bg-white p-8 text-center shadow-soft"><div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-2xl bg-blue-50 text-blue-600"><CalendarDays size={34}/></div><h1 className="text-2xl font-bold">Timeline Project</h1><p className="mt-2 text-sm text-slate-500">Loading workspace, users, dan data terbaru dari Google Sheet...</p><div className="mt-6 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full w-1/2 animate-pulse rounded-full bg-blue-600" /></div><p className="mt-4 rounded-xl bg-slate-100 p-3 text-sm text-slate-600">{syncMessage}</p></section></main>;
+  if (isBootstrapping) return <LoadingScreen error={syncMessage} />;
 
   if (!currentUser) return <main className="grid min-h-screen place-items-center bg-slate-50 p-6">
     <section className="w-full max-w-md rounded-3xl border border-slate-200/70 bg-white p-8 shadow-soft sm:p-10">
@@ -620,6 +620,27 @@ function CalendarToolbar({ month, setMonth, nextMonth, view, setView, openCreate
 function Legend({ projects }: { projects: Project[] }) { return <div className="mt-5 flex flex-wrap gap-5 text-sm text-slate-600">{projects.map(project => <span key={project.id} className="flex items-center gap-2"><i className="h-3 w-3 rounded-full" style={{ background: project.color }} />{project.name}</span>)}</div>; }
 
 function CalendarView({ days, month, tasks, projects, onCreate, onSelect, onMove }: any) { return <div className="overflow-hidden rounded-2xl border bg-white shadow-soft"><div className="grid grid-cols-7 border-b bg-slate-50">{dayNames.map(day => <div key={day} className="p-4 text-center text-sm font-semibold">{day}</div>)}</div><div className="grid grid-cols-7">{days.map(day => <DayCell key={toIsoDate(day)} day={day} currentMonth={month} tasks={tasks} projects={projects} onCreate={onCreate} onSelect={onSelect} onMove={onMove}/>)}</div></div>; }
+function LoadingScreen({ error }: { error?: string }) {
+  const msgs = ['Menyiapkan ruang kerjamu\u2026', 'Merapikan timeline\u2026', 'Menghitung deadline\u2026', 'Menata task biar rapi\u2026', 'Menyeduh kopi dulu\u2026', 'Sebentar ya\u2026'];
+  const [i, setI] = useState(0);
+  useEffect(() => { const t = setInterval(() => setI((v) => (v + 1) % msgs.length), 1600); return () => clearInterval(t); }, []);
+  const isErr = !!error && /gagal|error/i.test(error);
+  return <main className="grid min-h-screen place-items-center bg-slate-50 p-6">
+    <div className="flex flex-col items-center text-center">
+      <RobotMascot />
+      <h1 className="mt-1 text-lg font-bold text-slate-700">Timeline Project</h1>
+      {isErr
+        ? <p className="mt-3 max-w-xs rounded-xl bg-rose-50 px-4 py-2 text-sm font-medium text-rose-600">{error}</p>
+        : <><p className="mt-2 min-h-[20px] text-sm font-medium text-slate-500 transition-all">{msgs[i]}</p>
+            <div className="mt-4 flex gap-1.5">
+              <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.3s]" />
+              <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-blue-400 [animation-delay:-0.15s]" />
+              <span className="h-2.5 w-2.5 animate-bounce rounded-full bg-blue-300" />
+            </div></>}
+    </div>
+  </main>;
+}
+
 function DayCell({ day, currentMonth, tasks, projects, onCreate, onSelect, onMove, compact = false }: any) {
   const iso = toIsoDate(day);
   const dayTasks = tasks.filter((t: Task) => isTaskOnDate(t, iso));
