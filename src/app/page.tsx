@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { CalendarDays, ChevronLeft, ChevronRight, ChevronDown, Folder, LayoutDashboard, ListTodo, Menu, Plus, Search, Settings, Trash2, Users, X, Download, Upload, Save, KanbanSquare, AlertTriangle, Archive, MapPin, Link2, RotateCcw, Banknote, Bell, BarChart3, Bot, Send, Sparkles, Video, LogIn, Loader2 } from 'lucide-react';
 import { categories as defaultCategories, pics as defaultPics, projects as defaultProjects, requesters as defaultRequesters, seedTasks, settings as defaultSettings, statuses as defaultStatuses, users as defaultUsers } from '@/lib/data';
 import { AppUser, Pic, Project, ProjectFlag, SheetData, Status, Task, TaskPayload, WorkspaceSettings } from '@/lib/types';
@@ -619,7 +620,38 @@ function CalendarToolbar({ month, setMonth, nextMonth, view, setView, openCreate
 function Legend({ projects }: { projects: Project[] }) { return <div className="mt-5 flex flex-wrap gap-5 text-sm text-slate-600">{projects.map(project => <span key={project.id} className="flex items-center gap-2"><i className="h-3 w-3 rounded-full" style={{ background: project.color }} />{project.name}</span>)}</div>; }
 
 function CalendarView({ days, month, tasks, projects, onCreate, onSelect, onMove }: any) { return <div className="overflow-hidden rounded-2xl border bg-white shadow-soft"><div className="grid grid-cols-7 border-b bg-slate-50">{dayNames.map(day => <div key={day} className="p-4 text-center text-sm font-semibold">{day}</div>)}</div><div className="grid grid-cols-7">{days.map(day => <DayCell key={toIsoDate(day)} day={day} currentMonth={month} tasks={tasks} projects={projects} onCreate={onCreate} onSelect={onSelect} onMove={onMove}/>)}</div></div>; }
-function DayCell({ day, currentMonth, tasks, projects, onCreate, onSelect, onMove, compact = false }: any) { const iso = toIsoDate(day); const dayTasks = tasks.filter((t: Task) => isTaskOnDate(t, iso)); const visible = dayTasks.slice(0, compact ? 2 : 4); return <div onDragOver={e => e.preventDefault()} onDrop={e => { const id = e.dataTransfer.getData('text/plain'); if (id) onMove(id, iso); }} className={`calendar-cell border-b border-r p-3 ${sameMonth(day, currentMonth) ? 'bg-white' : 'bg-slate-50 text-slate-400'} ${compact ? 'min-h-[120px]' : ''} ${toIsoDate(day) === todayIso() ? 'bg-blue-50/60 ring-2 ring-inset ring-blue-400' : ''}`}><div className="mb-2 flex items-center justify-between"><span className={`font-semibold ${toIsoDate(day) === todayIso() ? 'grid h-7 w-7 place-items-center rounded-full bg-blue-600 text-white' : ''}`}>{day.getDate()}</span><button onClick={() => onCreate(iso)} title="Tambah task di tanggal ini" className="grid h-7 w-7 place-items-center rounded-lg text-slate-500 hover:bg-blue-50 hover:text-blue-700"><Plus size={17}/></button></div><div className="space-y-1.5">{visible.map((task: Task) => { const project = projectById(projects, task.projectId); const multi = (task.endDate || task.startDate) !== task.startDate; return <button key={task.id} draggable onDragStart={e => e.dataTransfer.setData('text/plain', task.id)} onClick={() => onSelect(task)} className="flex w-full items-center gap-1.5 rounded-lg px-2 py-2 text-left text-xs font-medium leading-tight hover:brightness-95" style={{ background: tint(project.color), borderLeft: `3px solid ${project.color}` }}><span className="task-dot" style={{ background: project.color }} /><span className="truncate">{multi && iso !== task.startDate ? '↳ ' : ''}{task.title}</span></button>; })}{dayTasks.length > visible.length && <button onClick={() => onSelect(dayTasks[visible.length])} className="text-xs font-semibold text-slate-500">+ {dayTasks.length - visible.length} lagi</button>}</div></div>; }
+function DayCell({ day, currentMonth, tasks, projects, onCreate, onSelect, onMove, compact = false }: any) {
+  const iso = toIsoDate(day);
+  const dayTasks = tasks.filter((t: Task) => isTaskOnDate(t, iso));
+  const visible = dayTasks.slice(0, compact ? 2 : 4);
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ left: number; y: number; up: boolean }>({ left: 0, y: 0, up: false });
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const openMore = () => {
+    const el = moreRef.current; if (!el) return;
+    const r = el.getBoundingClientRect();
+    const W = 264;
+    const left = Math.min(Math.max(8, r.left), window.innerWidth - W - 8);
+    const up = r.bottom > window.innerHeight * 0.6;
+    setPos({ left, y: up ? window.innerHeight - r.top + 6 : r.bottom + 6, up });
+    setOpen(true);
+  };
+  const TaskChip = ({ task, arrow }: { task: Task; arrow?: boolean }) => { const project = projectById(projects, task.projectId); const multi = (task.endDate || task.startDate) !== task.startDate; return <button draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', task.id)} onClick={() => { onSelect(task); setOpen(false); }} className="flex w-full items-center gap-1.5 rounded-lg px-2 py-2 text-left text-xs font-medium leading-tight hover:brightness-95" style={{ background: tint(project.color), borderLeft: `3px solid ${project.color}` }}><span className="task-dot" style={{ background: project.color }} /><span className="truncate">{arrow && multi && iso !== task.startDate ? '\u21b3 ' : ''}{task.title}</span></button>; };
+  return <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => { const id = e.dataTransfer.getData('text/plain'); if (id) onMove(id, iso); }} className={`calendar-cell border-b border-r p-3 ${sameMonth(day, currentMonth) ? 'bg-white' : 'bg-slate-50 text-slate-400'} ${compact ? 'min-h-[120px]' : ''} ${toIsoDate(day) === todayIso() ? 'bg-blue-50/60 ring-2 ring-inset ring-blue-400' : ''}`}>
+    <div className="mb-2 flex items-center justify-between"><span className={`font-semibold ${toIsoDate(day) === todayIso() ? 'grid h-7 w-7 place-items-center rounded-full bg-blue-600 text-white' : ''}`}>{day.getDate()}</span><button onClick={() => onCreate(iso)} title="Tambah task di tanggal ini" className="grid h-7 w-7 place-items-center rounded-lg text-slate-500 hover:bg-blue-50 hover:text-blue-700"><Plus size={17}/></button></div>
+    <div className="space-y-1.5">
+      {visible.map((task: Task) => <TaskChip key={task.id} task={task} arrow />)}
+      {dayTasks.length > visible.length && <button ref={moreRef} onClick={openMore} className="w-full rounded-lg px-2 py-1 text-left text-xs font-semibold text-slate-500 hover:bg-slate-100">+ {dayTasks.length - visible.length} lagi</button>}
+    </div>
+    {open && typeof document !== 'undefined' && createPortal(<>
+      <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+      <div className="fixed z-50 w-[264px] max-w-[calc(100vw-16px)] rounded-xl border bg-white p-2 shadow-xl" style={pos.up ? { left: pos.left, bottom: pos.y } : { left: pos.left, top: pos.y }}>
+        <div className="mb-1 flex items-center justify-between px-2 py-1"><span className="text-sm font-bold">{day.getDate()} {monthNames[day.getMonth()]} · {dayTasks.length} task</span><button onClick={() => setOpen(false)} className="rounded p-1 text-slate-400 hover:bg-slate-100"><X size={15}/></button></div>
+        <div className="max-h-72 space-y-1 overflow-y-auto">{dayTasks.map((task: Task) => <TaskChip key={task.id} task={task} />)}</div>
+      </div>
+    </>, document.body)}
+  </div>;
+}
 function WeekView({ month, tasks, projects, onCreate, onSelect, onMove }: any) { const start = getMondayStart(month); const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(start); d.setDate(start.getDate() + i); return d; }); return <CalendarView days={days} month={month} tasks={tasks} projects={projects} onCreate={onCreate} onSelect={onSelect} onMove={onMove}/>; }
 function QuarterView({ month, zoom, tasks, projects, onCreate, onSelect, onMove }: any) { const qStartMonth = Math.floor(month.getMonth() / 3) * 3; const months = [0, 1, 2].map(i => new Date(month.getFullYear(), qStartMonth + i, 1)); return <div className="rounded-2xl border bg-white p-4 shadow-soft"><div className="mb-4 flex items-center justify-between"><h3 className="text-lg font-bold">Q{Math.floor(month.getMonth()/3)+1} {month.getFullYear()}</h3><p className="text-sm text-slate-500">Scrollbar ada di atas kalender. Geser horizontal atau pakai slider zoom.</p></div><TopScroll><div className="flex gap-4" style={{ minWidth: `${zoom * 22}px` }}>{months.map(m => <div key={m.toISOString()} className="shrink-0" style={{ width: `${zoom * 9}px`, minWidth: 620 }}><h4 className="mb-3 text-center font-bold">{monthNames[m.getMonth()]}</h4><CalendarView days={getCalendarDays(m)} month={m} tasks={tasks} projects={projects} onCreate={onCreate} onSelect={onSelect} onMove={onMove}/></div>)}</div></TopScroll></div>; }
 function TimelineView({ tasks, projects, statuses, canEdit, onStatus, onSelect }: { tasks: Task[]; projects: Project[]; statuses: string[]; canEdit: boolean; onStatus: (id: string, patch: Partial<Task>) => void; onSelect: (task: Task) => void }) {

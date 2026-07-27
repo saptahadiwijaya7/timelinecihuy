@@ -255,3 +255,6 @@ Catatan: PWA aktif setelah kunjungan pertama pasca-deploy (service worker terdaf
 
 ## Update v1.19.0 — Fix drawer Detail Task saat scroll
 Drawer Detail Task di desktop kini menempel (sticky) ke viewport seperti panel asisten, jadi tidak lagi "tertinggal" di atas saat daftar (mis. Timeline panjang) di-scroll ke bawah. Isi drawer diberi ruang bawah agar tidak tertutup tombol Edit/Hapus. Frontend saja.
+
+## Update v1.20.0 — Popover "lihat semua" event kalender
+Di tampilan Bulan, hari dengan event lebih banyak dari yang muat kini menampilkan "+N lagi" yang bisa diklik → muncul popover berisi SEMUA event hari itu (bisa di-scroll, tiap event diklik untuk buka detail). Popover dirender via portal + posisi pintar (buka ke atas bila sel di bagian bawah layar) sehingga tidak terpotong. Frontend saja.
